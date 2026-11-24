@@ -27,291 +27,71 @@
  *     `Row` → `'single'`.
  */
 
-import {
-  forEachWalkHop,
-  getExtensionOperator,
-  listExtensionOperators,
-  type TypeRef,
-  usesWalkGrammar,
-  walkGrammarPath
-} from '@mnmal-ai/substrate-filter';
+import { getExtensionOperator, listExtensionOperators } from '@mnmal-ai/substrate-filter';
 import type {
   ActHandle,
   ActInput,
   ActionLayer,
-  ActMode,
   ActorIdentity,
-  ActPlanStep,
   ActResponse,
   ActResultRecord,
-  ActResultStore,
-  ActStepOutcome,
-  AfterTxWork,
-  AutoCrudVerb,
-  BatchResolver,
   BridgeRegistry,
   Dataset,
   DatasetRegistry,
   DropParticipant,
   EdgesStore,
   EngineInput,
-  FieldDef,
-  FilterWriteLimits,
   FrameEntry,
-  IdempotencyStore,
   Identity,
-  IndexPlan,
-  MetadataHop,
-  OrderedBy,
   PackEnvelope,
-  PlanClause,
   PolicyDecision,
   PolicyProbeContext,
   QualifiedFrame,
-  ReadResult,
   RegistryEntry,
   Registry as RegistryInterface,
-  RequestContext,
-  ResolveObservation,
   ResolverArgs,
-  Row,
   Schema,
   SweepDeps,
-  TypeSchema,
   WriteEvent
 } from '@mnmal-ai/substrate-types';
-import {
-  BatchElementError,
-  DEFAULT_FILTER_WRITE_LIMITS,
-  grantRefusal,
-  grantRefusalCode,
-  idHint,
-  isBatchElementError,
-  isResolverFrameError,
-  isRestrictViolation,
-  naturalOrderOf,
-  ROW_POLICY_BLOCKS_WALK,
-  toActionSchema,
-  WALK_UNSUPPORTED_REF,
-  WALKS_IN_MUTATION,
-  WALKS_UNSUPPORTED_STORE
-} from '@mnmal-ai/substrate-types';
-import { compileSketch } from '../act/compile.js';
-import {
-  ActDryRunRollback,
-  ActStepFailure,
-  formatAck,
-  inlineFinds,
-  MAX_STORED_ROWS,
-  newResultId,
-  ownerKeyOf,
-  planLine,
-  stepOutcome
-} from '../act/outcome.js';
-import { readShapeOf, walkShapesOf } from '../advisor/shape-recorder.js';
-import { classifyWalkService, type WalkSite, walkSites } from '../advisor/walk-service.js';
+import { DEFAULT_FILTER_WRITE_LIMITS } from '@mnmal-ai/substrate-types';
 import { applyLostNamespace } from '../apply-lost-namespace.js';
-import { actorOf, CommittedWritesQueue } from './committed-writes.js';
-
-/** Local query keys dispatched at once; the rest wait for a free slot. */
-const QUERY_KEY_CONCURRENCY = 16;
-
-/** A walk-grammar frame's walks, resolved once for the shape recorder and the plan. */
-interface WalkScan {
-  sites: WalkSite[];
-  resolve: HopResolver;
-  fieldsOf: (ref: TypeRef) => Record<string, FieldDef> | undefined;
-  naturalOrder: (ref: TypeRef) => OrderedBy;
-}
-
-/** `#runEntry`'s parameters after `(envelope, key)`. */
-type RunEntryRest = [
-  entry: FrameEntry,
-  ctxBase: Omit<RequestContext, 'namespace'>,
-  operation: 'query' | 'mutate',
-  tx: Dataset | null,
-  txEdges: EdgesStore | null,
-  parsed: ParsedKey | null,
-  onWrite?: (event: WriteEvent) => void,
-  signal?: AbortSignal,
-  afterTx?: (fn: AfterTxWork) => void,
-  txEntries?: number
-];
-
-/** A partition that opens a transaction. */
-type TxPartition = Exclude<LocalTxScopePartition, { kind: 'zero_datasets' }>;
-
-/** Unwinds the shared single-frame tx; the refusing entry's error is already on the envelope. */
-class SharedTxRefusal extends Error {
-  override readonly name = 'SharedTxRefusal';
-}
-
-/**
- * Unwinds a batched-array transaction for a frame that refused via the
- * envelope rather than by throwing.
- *
- * `#runEntry` records a `ResolverFrameError` on the envelope and returns
- * normally, which inside `#runArrayEntry`'s transaction would otherwise read as
- * success and commit the earlier frames. Carries the original errors so their
- * client-branchable codes survive the rollback.
- */
-class BatchedFrameRefusal extends Error {
-  override readonly name = 'BatchedFrameRefusal';
-  constructor(readonly frameErrors: FrameErrors) {
-    super(frameErrors[0]?.message ?? 'batched frame refused');
-  }
-}
-
-type FrameErrors = Array<{ message: string; path?: string[]; code?: string }>;
-
-/**
- * A batch resolver refused with a frame error that names no element (on pg, a
- * `unique_violation` from its set-wise write). `#runArrayEntry` rolls the
- * attempt back and re-runs the array per element to find the element and the
- * envelope sequential dispatch gives.
- */
-class BatchRefusalWithoutIndex extends Error {
-  override readonly name = 'BatchRefusalWithoutIndex';
-  constructor(override readonly cause: Error) {
-    super(cause.message);
-  }
-}
-
-/** One element of a mutate array before the tx: a cached replay, or a slot to run. */
-interface ArraySlot {
-  cached: boolean;
-  data?: unknown;
-  shape?: 'single' | 'list';
-  dedupKey?: string;
-  errors?: FrameErrors;
-}
-
-/** What one array element left under `key` in its scratch envelope. */
-interface SlotResult {
-  data?: unknown;
-  shape?: 'single' | 'list';
-  errors?: FrameErrors;
-}
-
-/**
- * The far type of one walk hop from `near`, read from `fieldsOf`: the type an
- * `in` names, or the target of the crossRef an `out` follows. Undefined for
- * anything else.
- */
-function hopFarType(
-  node: Record<string, unknown>,
-  near: TypeRef,
-  fieldsOf: (ref: TypeRef) => Record<string, FieldDef> | undefined
-): TypeRef | undefined {
-  if (typeof node.in === 'string' && node.out === undefined) {
-    const m = /^([^/]+)\/([^./]+)\.[^.]+$/.exec(node.in);
-    return m?.[1] !== undefined && m[2] !== undefined ? { ns: m[1], type: m[2] } : undefined;
-  }
-  if (typeof node.out !== 'string' || node.in !== undefined) return undefined;
-  const fields = fieldsOf(near);
-  const def =
-    fields !== undefined && Object.hasOwn(fields, node.out) ? fields[node.out] : undefined;
-  return def?.kind === 'crossRef' ? { ns: def.ns, type: def.type } : undefined;
-}
-
-/** Rows a row-filtered page scans before it stops and hands back a cursor. */
-const ROW_FILTER_SCAN_ROWS = 5000;
-/** Rows it reads at a time while it looks past hidden ones. */
-const ROW_FILTER_CHUNK = 200;
-
-function slotResultOf(scratch: PackEnvelope, key: string): SlotResult {
-  const entry: SlotResult = {};
-  if (key in scratch.data) entry.data = scratch.data[key];
-  const shape = scratch.shapes[key];
-  // A mutate frame is rows; only a read is shaped `count` or `groups`.
-  if (shape === 'single' || shape === 'list') entry.shape = shape;
-  if (scratch.errors !== undefined && scratch.errors.length > 0) entry.errors = scratch.errors;
-  return entry;
-}
-
-function cachedSlotResult(slot: ArraySlot): SlotResult {
-  return {
-    ...(slot.data !== undefined ? { data: slot.data } : {}),
-    ...(slot.shape !== undefined ? { shape: slot.shape } : {}),
-    ...(slot.errors !== undefined ? { errors: slot.errors } : {})
-  };
-}
-
-/** Everything `#runEntryInner` settles before it calls the resolver. */
-interface PreparedEntry {
-  registryEntry: RegistryEntry;
-  frame: FrameEntry;
-  ctx: RequestContext;
-  args: ResolverArgs;
-  decision: PolicyDecision;
-  ns: string;
-  name: string;
-  isVirtual: boolean;
-  dataset: Dataset | undefined;
-  walkScan: WalkScan | undefined;
-}
-
-/** Hand `o` to the resolve hook; a metrics sink must never change what the caller gets. */
-function observe(hook: (o: ResolveObservation) => void, o: ResolveObservation): void {
-  try {
-    const ret: unknown = hook(o);
-    // An async hook's rejection must not become an unhandled rejection.
-    if (typeof (ret as PromiseLike<unknown> | undefined)?.then === 'function') {
-      Promise.resolve(ret).catch(() => {});
-    }
-  } catch {
-    // Swallowed: see above.
-  }
-}
-
-import type { WalkResolvers } from '../filter/walk-validator.js';
 import { MemoryActResultStore } from '../memory-act-result-store.js';
-import { applyObligations, evaluatePolicy } from '../policy-evaluator.js';
 import { Registry } from '../registry.js';
-import { type HopResolver, hopResolver, type WalkedType, walkedTypes } from '../walk-types.js';
+import { ActSubsystem } from './act.js';
+import { ArrayDispatch } from './batch.js';
 import { BridgeSubsystem } from './bridge.js';
-import { isSealedCursor, openCursor } from './cursor-seal.js';
-import { type FilterGuardDeps, runFilterGuard } from './filter-guard.js';
+import { CommittedWritesQueue } from './committed-writes.js';
+import { EntryGate } from './entry-gate.js';
+import { EntryRunner } from './entry-run.js';
 import {
   addError,
-  addTopLevelError,
-  batchedInFlightKey,
-  callerDedupComponent,
-  checkIdentityGrant,
+  buildContext,
+  buildParsedKeyCache,
   DEFAULT_IDEMPOTENCY_TTL_MS,
   DEFAULT_SUBSCRIPTION_QUEUE_LIMIT,
   type EngineOptions,
-  isReadResult,
   type MetricFn,
-  makeArrayDedupKey,
-  makeDedupKey,
   type NamespaceConfig,
   NO_BRIDGES,
   type ParsedKey,
-  parseQualifiedKey,
   readsEveryNamespace,
   type StreamHandle,
   type StreamInput,
   type SubscribeInput,
   type SubscriptionHandle,
-  type SubscriptionStatsSnapshot,
-  scopeBridgeIdempotency,
-  toResolverArgs,
-  unknownFrameKeyMessage,
-  withCanonicalMetadataFilters,
-  withNaturalOrder,
-  withNestedNaturalOrder
+  type SubscriptionStatsSnapshot
 } from './internals.js';
-import {
-  type LocalTxScopePartition,
-  partitionMutateByRoute,
-  partitionMutateByShape,
-  partitionMutateByTxScope
-} from './mutate.js';
-import { resolverFiltered, shapeResult } from './result-shape.js';
+import { LocalTx } from './local-tx.js';
+import { MutateDispatch } from './mutate-dispatch.js';
+import { applyPageLimits } from './page-limits.js';
 import { SchemaSubsystem } from './schema.js';
 import { StreamSubsystem } from './stream.js';
 import { SubscribeSubsystem } from './subscribe.js';
+import { EngineWalks } from './walks.js';
+
+/** Local query keys dispatched at once; the rest wait for a free slot. */
+const QUERY_KEY_CONCURRENCY = 16;
 
 /**
  * Public engine types, re-exported through this module. `EngineInput`,
@@ -348,29 +128,8 @@ export class Engine implements ActHandle {
   readonly #datasets: DatasetRegistry;
   readonly #edges: EdgesStore;
   readonly #metric: MetricFn;
-  readonly #onResolve: ((o: ResolveObservation) => void) | undefined;
-  /** Built once rather than per entry: every frame entry reaches the filter guard. */
-  readonly #guardDeps: FilterGuardDeps = {
-    schemaFor: (ns) => this.schemaFor(ns),
-    invalidateSchemaCaches: (ns) => this.invalidateSchemaCaches(ns),
-    metric: (name, payload) => this.#metric(name, payload)
-  };
   readonly #committed: CommittedWritesQueue;
-  readonly #filterWriteLimits: FilterWriteLimits;
-  readonly #shapeRecorder: EngineOptions['shapeRecorder'];
-  readonly #idempotency: { store: IdempotencyStore; defaultTtlMs: number } | undefined;
-  /**
-   * Mutates under a dedup key that are still running. The store only sees a
-   * key once the first call finishes, so a retry arriving meanwhile joins this
-   * promise instead of writing again. Per process: a store shared across
-   * processes still admits concurrent duplicates.
-   */
-  readonly #inFlightMutates = new Map<string, Promise<PackEnvelope>>();
-  /** `act` runs under an idempotency key that have not finished, keyed `ownerKey \0 key`. */
-  readonly #inFlightActs = new Map<string, Promise<ActResponse>>();
-  readonly #act: { results: ActResultStore; ttlMs: number; maxWriteSteps: number };
   readonly #bridges: BridgeRegistry;
-  readonly #isStoredEntry: (entry: RegistryEntry) => boolean;
   /**
    * Disposer returned by `DatasetRegistry.onNamespaceLost`. Present iff the
    * registry implements the optional lifecycle surface (§6.4); `dispose()`
@@ -392,30 +151,26 @@ export class Engine implements ActHandle {
   readonly #stream: StreamSubsystem;
   /** Bridge-proxy subsystem (§5.8 / §6.5) for bridged query/mutate buckets. */
   readonly #bridgeProxy: BridgeSubsystem;
+  /** Grant, policy and walk decisions for every frame entry and policy probe. */
+  readonly #gate: EntryGate;
+  readonly #runner: EntryRunner;
+  readonly #mutation: MutateDispatch;
+  readonly #acts: ActSubsystem;
 
   constructor(opts: EngineOptions) {
     this.#namespaces = opts.namespaces;
     this.#datasets = opts.datasets;
     this.#edges = opts.edges;
     this.#metric = opts.metric ?? ((): void => {});
-    this.#onResolve = opts.onResolve;
     this.#committed = new CommittedWritesQueue(opts.committedWritesHooks ?? [], this.#metric);
-    this.#shapeRecorder = opts.shapeRecorder;
-    this.#filterWriteLimits = opts.filterWriteLimits ?? DEFAULT_FILTER_WRITE_LIMITS;
-    this.#idempotency =
+    const idempotency =
       opts.idempotency !== undefined
         ? {
             store: opts.idempotency.store,
             defaultTtlMs: opts.idempotency.defaultTtlMs ?? DEFAULT_IDEMPOTENCY_TTL_MS
           }
         : undefined;
-    this.#act = {
-      results: opts.act?.results ?? new MemoryActResultStore(),
-      ttlMs: opts.act?.resultTtlMs ?? 86_400_000,
-      maxWriteSteps: opts.act?.maxWriteSteps ?? 50
-    };
     this.#bridges = opts.sweepHooks?.bridges ?? NO_BRIDGES;
-    this.#isStoredEntry = opts.isStoredEntry ?? ((): boolean => false);
     this.#schema = new SchemaSubsystem({
       namespaces: this.#namespaces,
       bridges: this.#bridges,
@@ -443,6 +198,78 @@ export class Engine implements ActHandle {
       metric: this.#metric,
       schemaFor: (ns: string): Schema => this.schemaFor(ns),
       isTombstoned: (ns: string): boolean => this.#tombstoned.has(ns)
+    });
+    const walks = new EngineWalks({
+      datasets: this.#datasets,
+      metric: this.#metric,
+      schemaFor: (ns: string): Schema => this.schemaFor(ns)
+    });
+    this.#gate = new EntryGate({
+      namespaces: this.#namespaces,
+      tombstoned: this.#tombstoned,
+      datasets: this.#datasets,
+      edges: this.#edges,
+      bridges: this.#bridges,
+      metric: this.#metric,
+      schema: this.#schema,
+      walks,
+      filterWriteLimits: opts.filterWriteLimits ?? DEFAULT_FILTER_WRITE_LIMITS,
+      isStoredEntry: opts.isStoredEntry ?? ((): boolean => false),
+      isLive: (ns: string): boolean => this.#isLive(ns),
+      typeEntry: (ns, type) => this.typeEntry(ns, type)
+    });
+    this.#runner = new EntryRunner({
+      namespaces: this.#namespaces,
+      metric: this.#metric,
+      gate: this.#gate,
+      walks,
+      onResolve: opts.onResolve,
+      shapeRecorder: opts.shapeRecorder
+    });
+    const tx = new LocalTx({ edges: this.#edges, metric: this.#metric });
+    const makeEnvelope = (keys: string[], parsedByKey: Map<string, ParsedKey | null>) =>
+      this.#makeEnvelope(keys, parsedByKey);
+    this.#mutation = new MutateDispatch({
+      namespaces: this.#namespaces,
+      datasets: this.#datasets,
+      bridges: this.#bridges,
+      metric: this.#metric,
+      gate: this.#gate,
+      runner: this.#runner,
+      arrays: new ArrayDispatch({
+        namespaces: this.#namespaces,
+        tombstoned: this.#tombstoned,
+        datasets: this.#datasets,
+        metric: this.#metric,
+        gate: this.#gate,
+        runner: this.#runner,
+        tx,
+        idempotency,
+        onResolve: opts.onResolve
+      }),
+      tx,
+      bridgeProxy: this.#bridgeProxy,
+      committed: this.#committed,
+      subscribe: this.#subscribe,
+      idempotency,
+      makeEnvelope
+    });
+    this.#acts = new ActSubsystem({
+      namespaces: this.#namespaces,
+      datasets: this.#datasets,
+      metric: this.#metric,
+      schema: this.#schema,
+      runner: this.#runner,
+      tx,
+      committed: this.#committed,
+      subscribe: this.#subscribe,
+      act: {
+        results: opts.act?.results ?? new MemoryActResultStore(),
+        ttlMs: opts.act?.resultTtlMs ?? 86_400_000,
+        maxWriteSteps: opts.act?.maxWriteSteps ?? 50
+      },
+      actionLayer: () => this.#actionLayer,
+      makeEnvelope
     });
 
     // §6.4 subscribe. Feature-detected: a registry without `onNamespaceLost`
@@ -690,7 +517,7 @@ export class Engine implements ActHandle {
     // so a verb-less write probe would pass a write gate built from it.
     // The read probe deliberately sets no verb: `allowVerbs` DENIES verb-less
     // entries, so adding one there would change read posture.
-    return this.#evaluateEntryPolicy(ns, type, identity, 'mutate', probe, 'update');
+    return this.#gate.evaluateEntryPolicy(ns, type, identity, 'mutate', probe, 'update');
   }
 
   /**
@@ -708,57 +535,7 @@ export class Engine implements ActHandle {
     probe?: PolicyProbeContext,
     args?: ResolverArgs
   ): PolicyDecision {
-    return this.#evaluateEntryPolicy(ns, type, identity, 'query', probe, undefined, args);
-  }
-
-  /**
-   * Shared body of the two out-of-band policy probes. Mirrors #runEntry's
-   * pre-dispatch checks (tombstone, registry lookup, identity-namespace claim)
-   * with a synthetic ctx. Fails closed throughout: an out-of-band surface must
-   * never be MORE permissive than dispatch.
-   */
-  #evaluateEntryPolicy(
-    ns: string,
-    type: string,
-    identity: Identity | null,
-    operation: 'query' | 'mutate',
-    probe: PolicyProbeContext | undefined,
-    verb?: AutoCrudVerb,
-    args?: ResolverArgs
-  ): PolicyDecision {
-    if (this.#tombstoned.has(ns)) {
-      return { allow: false, reason: `namespace '${ns}' was deleted` };
-    }
-    const nsCfg = this.#namespaces.get(ns);
-    if (!nsCfg) {
-      return { allow: false, reason: `unknown namespace '${ns}'` };
-    }
-    const entry = nsCfg.registry.get(type);
-    if (entry?.kind !== 'type') {
-      return { allow: false, reason: `unknown type '${type}' in namespace '${ns}'` };
-    }
-    const nsGate = checkIdentityGrant(identity, ns, operation);
-    if (!nsGate.ok) {
-      return { allow: false, reason: grantRefusal(ns, nsGate) };
-    }
-    // Where auth is on, the mutate route admits no caller without an identity,
-    // whatever the mode; a probe has no route gate in front of it.
-    if (operation === 'mutate' && identity === null && probe?.authEnabled === true) {
-      return { allow: false, reason: 'a write needs an identity' };
-    }
-    const ctx: RequestContext = {
-      now: probe?.now ?? new Date(),
-      headers: probe?.headers ?? {},
-      meta: probe?.meta ?? {},
-      ...(probe?.clientIp !== undefined ? { clientIp: probe.clientIp } : {}),
-      ...(probe?.authEnabled !== undefined ? { authEnabled: probe.authEnabled } : {}),
-      identity,
-      namespace: ns,
-      operation,
-      entry: type,
-      ...(verb !== undefined ? { verb } : {})
-    };
-    return evaluatePolicy(entry.policy, ctx, args ?? {});
+    return this.#gate.evaluateEntryPolicy(ns, type, identity, 'query', probe, undefined, args);
   }
 
   /**
@@ -792,11 +569,11 @@ export class Engine implements ActHandle {
   async query(input: EngineInput): Promise<PackEnvelope> {
     const keys = Object.keys(input.frame);
     // Pre-parse every key once; everything downstream reads from this map.
-    const parsedByKey = this.#buildParsedKeyCache(keys);
+    const parsedByKey = buildParsedKeyCache(keys);
     const envelope = this.#makeEnvelope(keys, parsedByKey);
     if (keys.length === 0) return envelope;
 
-    const ctx = this.#buildContext(input.ctx, 'query');
+    const ctx = buildContext(input.ctx, 'query');
     const signal = input.signal;
 
     // Partition keys into local vs per-bridge buckets.
@@ -828,12 +605,12 @@ export class Engine implements ActHandle {
         !this.#namespaces.has(parsed.ns) &&
         this.#bridges.has(parsed.ns)
       ) {
-        if (this.#refuseUngranted(envelope, key, parsed.ns, ctx.identity, 'query')) continue;
+        if (this.#gate.refuseUngranted(envelope, key, parsed.ns, ctx.identity, 'query')) continue;
         // The peer answers under the bridge's credential, so a walk is forwarded
         // only when every namespace it reaches is one this caller may read.
         if (
           !readsEveryNamespace(ctx.identity) &&
-          !this.#bridgedWalksReadable(parsed.ns, parsed.name, entry, ctx.identity)
+          !this.#gate.bridgedWalksReadable(parsed.ns, parsed.name, entry, ctx.identity)
         ) {
           addError(
             envelope,
@@ -852,7 +629,14 @@ export class Engine implements ActHandle {
         bucket[key] = entry;
         continue;
       }
-      const paged = this.#applyPageLimits(envelope, key, entry, parsed, input.pageLimits);
+      const paged = applyPageLimits(
+        this.#namespaces,
+        envelope,
+        key,
+        entry,
+        parsed,
+        input.pageLimits
+      );
       if (paged !== null) localEntries.push([key, paged]);
     }
 
@@ -879,7 +663,7 @@ export class Engine implements ActHandle {
           this.#metric('engine_query_aborted', { key });
           continue;
         }
-        await this.#runEntry(
+        await this.#runner.runEntry(
           envelope,
           key,
           entry,
@@ -923,936 +707,20 @@ export class Engine implements ActHandle {
    * (§6.5 "Deletes never proceed silently across a network").
    */
   async mutate(input: EngineInput): Promise<PackEnvelope> {
-    const keys = Object.keys(input.frame);
-    // Pre-parse every key once; everything downstream reads from this map.
-    const parsedByKey = this.#buildParsedKeyCache(keys);
-    const envelope = this.#makeEnvelope(keys, parsedByKey);
-    if (keys.length === 0) return envelope;
-
-    // §5.13 idempotency. Frame-scoped dedup key resolution + cache hit short-
-    // circuit happen before any partitioning so a conflict / hit never touches
-    // a resolver.
-    const idempotencyResolution = this.#resolveFrameIdempotencyKey(input.frame);
-    if (idempotencyResolution.kind === 'conflict') {
-      addTopLevelError(
-        envelope,
-        `conflicting idempotencyKey values in mutate frame: ${idempotencyResolution.values.join(', ')}`,
-        'idempotency_key_conflict'
-      );
-      this.#metric('engine_idempotency_key_conflict', {
-        values: idempotencyResolution.values
-      });
-      return envelope;
-    }
-    // Caller-scope the dedup key: a cache hit short-circuits
-    // dispatch before policy/obligations run, so the key must not cross
-    // authorization boundaries. Computed once and reused for the post-commit
-    // `.put()` so read + write address the same slot.
-    const callerKey = callerDedupComponent(input.ctx.identity ?? null);
-    const idempotency = this.#idempotency;
-    const dedupKey =
-      idempotencyResolution.kind === 'present'
-        ? makeDedupKey(keys, idempotencyResolution.value, callerKey)
-        : undefined;
-    // Batched slots are cached per frame after commit; a concurrent retry of
-    // the same batch joins the running one rather than missing that cache.
-    const inFlightKey = dedupKey ?? batchedInFlightKey(input.frame, callerKey);
-    if (inFlightKey !== undefined && idempotency !== undefined) {
-      const running = this.#inFlightMutates.get(inFlightKey);
-      if (running !== undefined) {
-        this.#metric('engine_idempotency_joined', { dedupKey: inFlightKey });
-        return running;
-      }
-      const run = (async (): Promise<PackEnvelope> => {
-        const cached = dedupKey === undefined ? undefined : await idempotency.store.get(dedupKey);
-        if (cached !== undefined) {
-          this.#metric('engine_idempotency_hit', { dedupKey });
-          return cached;
-        }
-        return this.#mutateDispatch(
-          input,
-          keys,
-          parsedByKey,
-          envelope,
-          idempotencyResolution,
-          callerKey
-        );
-      })();
-      this.#inFlightMutates.set(inFlightKey, run);
-      try {
-        return await run;
-      } finally {
-        this.#inFlightMutates.delete(inFlightKey);
-      }
-    }
-    return this.#mutateDispatch(
-      input,
-      keys,
-      parsedByKey,
-      envelope,
-      idempotencyResolution,
-      callerKey
-    );
-  }
-
-  async #mutateDispatch(
-    input: EngineInput,
-    keys: string[],
-    parsedByKey: Map<string, ParsedKey | null>,
-    envelope: PackEnvelope,
-    idempotencyResolution: { kind: 'absent' } | { kind: 'present'; value: string },
-    callerKey: string
-  ): Promise<PackEnvelope> {
-    // Partition by routing target (local vs bridged) and by frame shape (single
-    // vs array). Empty-array op-keys are rejected here so the local-dispatch
-    // pass only sees well-formed batches.
-    const { bridgeBuckets, localKeys } = partitionMutateByRoute(
-      input.frame,
-      parsedByKey,
-      envelope,
-      {
-        datasets: this.#datasets,
-        bridges: this.#bridges,
-        hasLocalNamespace: (ns: string): boolean => this.#namespaces.has(ns),
-        refuseUngranted: (key: string, ns: string): boolean =>
-          this.#refuseUngranted(envelope, key, ns, input.ctx.identity ?? null, 'mutate'),
-        metric: this.#metric
-      }
-    );
-    const { singleFrameKeys, nonEmptyArrayKeys } = partitionMutateByShape(
-      input.frame,
-      localKeys,
-      envelope,
-      this.#metric
-    );
-
-    // §5.3 G1 cross-substrate refusal + substrate coalescing. The single-frame
-    // bucket shares ONE tx, so resolving every entry's dataset and refusing
-    // mixed substrates must happen before any resolver runs. Array buckets are
-    // each single-key — cross-substrate within an array is structurally
-    // impossible — and run their own tx, so they're not part of this check.
-    // Keys outside the caller's mutate grant stay out of the scope check: they
-    // fail their own gate at dispatch, and a refusal must not describe
-    // namespaces the caller cannot reach.
-    const identity = input.ctx.identity ?? null;
-    const grantedKeys = singleFrameKeys.filter((key) => {
-      const parsed = parsedByKey.get(key);
-      return !parsed || checkIdentityGrant(identity, parsed.ns, 'mutate').ok;
-    });
-    const partition = partitionMutateByTxScope(grantedKeys, parsedByKey, this.#datasets);
-    if (partition.kind === 'cross_tx_scope_refused') {
-      addTopLevelError(envelope, partition.message, 'cross_tx_scope_refused');
-      this.#metric('engine_cross_tx_scope_refused', { namespaces: partition.namespaces });
-      return envelope;
-    }
-
-    const ctx = this.#buildContext(input.ctx, 'mutate');
-    const signal = input.signal;
-
-    // Fire bridge proxies in parallel with the local tx (§5.8). Each bridge's
-    // call is independent and populates envelope.errors on failure rather than
-    // throwing — bridge atomicity is per-bridge best-effort, NOT G1.
-    const bridgePromises: Array<Promise<void>> = [];
-    for (const [ns, bucket] of bridgeBuckets) {
-      bridgePromises.push(
-        this.#bridgeProxy.runMutate(ns, scopeBridgeIdempotency(bucket, callerKey), envelope)
-      );
-    }
-
-    // §5.4 write-event batch. Resolvers emit into this collector via
-    // `args.onWrite`; a rolled-back tx's events never reach it.
-    const writeBatch: WriteEvent[] = [];
-    const onWrite = (event: WriteEvent): void => {
-      writeBatch.push(event);
-    };
-
-    // Subscribers and hooks hear each commit (the single-frame bucket, then each
-    // array key) as it lands: in commit order, and a later throw cannot lose an
-    // earlier commit. Dispatch is enqueue-only, so a slow consumer cannot stall it.
-    const hooked = this.#committed.active;
-    const actor = hooked ? actorOf(identity) : null;
-    let announced = 0;
-    const commit = (): void => {
-      const events = writeBatch.slice(announced);
-      this.#subscribe.dispatchWrites(events);
-      if (hooked) this.#committed.queue(events, actor);
-      announced = writeBatch.length;
-    };
-
-    await this.#dispatchSingleFrameLocal(
-      envelope,
-      input.frame,
-      singleFrameKeys,
-      parsedByKey,
-      partition,
-      ctx,
-      onWrite,
-      signal
-    );
-    commit();
-
-    // Batched op-keys: one isolated tx per array (§5.13). Each array commits
-    // or rolls back independently of every other op-key and of the single-
-    // frame bucket. A throw in array[i] rolls back that array's tx only;
-    // prior array op-keys keep their commits, the single-frame bucket keeps
-    // its commit (if it already resolved), and later array op-keys still run.
-    for (const key of nonEmptyArrayKeys) {
-      const frames = input.frame[key] as Array<FrameEntry>;
-      await this.#runArrayEntry(
-        envelope,
-        key,
-        parsedByKey.get(key) ?? null,
-        frames,
-        ctx,
-        onWrite,
-        signal
-      );
-      commit();
-    }
-
-    await Promise.all(bridgePromises);
-
-    return this.#finaliseMutateEnvelope(envelope, keys, idempotencyResolution, callerKey);
-  }
-
-  /**
-   * Dispatch the single-frame G1 bucket (§5.3). Branches on the substrate
-   * partition shape:
-   *
-   *   - `zero_datasets`: no singleFrame key resolved to a dataset. Run each
-   *     through `#runEntry` with no tx. Two legitimate populations land here:
-   *     unresolvable keys (unqualified / unknown ns) emit their own per-key
-   *     error code, and virtual-namespace keys dispatch with `args.dataset`
-   *     undefined — virtual mutations are non-transactional.
-   *   - `single_dataset`: one shared tx across every entry. If the dataset
-   *     implements `withScopedTransaction` AND the substrate's edges handle
-   *     is non-null, row and edge mutations run in ONE substrate tx; otherwise
-   *     they use nested dataset + edges txs.
-   *   - `coalesced_tx_scope`: N datasets, one substrate. Requires
-   *     `withScopedTransaction`; if missing, surface
-   *     `cross_tx_scope_refused` rather than silently breaking G1.
-   */
-  async #dispatchSingleFrameLocal(
-    envelope: PackEnvelope,
-    frame: QualifiedFrame,
-    singleFrameKeys: string[],
-    parsedByKey: Map<string, ParsedKey | null>,
-    partition: LocalTxScopePartition,
-    ctx: Omit<RequestContext, 'namespace'>,
-    onWrite: (event: WriteEvent) => void,
-    signal: AbortSignal | undefined
-  ): Promise<void> {
-    if (partition.kind === 'zero_datasets') {
-      if (singleFrameKeys.length === 0) return;
-      for (const key of singleFrameKeys) {
-        const entry = frame[key] as FrameEntry | undefined;
-        if (entry === undefined) continue;
-        await this.#runEntry(
-          envelope,
-          key,
-          entry,
-          ctx,
-          'mutate',
-          null,
-          null,
-          parsedByKey.get(key) ?? null,
-          undefined,
-          signal
-        );
-      }
-      return;
-    }
-
-    // One tx for the bucket: a resolver refusing through the envelope must
-    // unwind it like a throw, or the entries before it commit. Write events
-    // wait for the commit for the same reason.
-    const pending: WriteEvent[] = [];
-    const settled: AfterTxWork[] = [];
-    let committed = false;
-    let refusedKey: string | undefined;
-    const runBody = async (
-      txFor: (ns: string) => Dataset | null,
-      txEdges: EdgesStore
-    ): Promise<void> => {
-      // Every key, not just the ones that resolved to a dataset: virtual,
-      // unknown and unqualified keys still dispatch (or report their error).
-      for (const key of singleFrameKeys) {
-        const entry = frame[key] as FrameEntry | undefined;
-        if (entry === undefined) continue;
-        const parsed = parsedByKey.get(key) ?? null;
-        const errorsBefore = envelope.errors?.length ?? 0;
-        const thrown = await this.#runEntry(
-          envelope,
-          key,
-          entry,
-          ctx,
-          'mutate',
-          parsed === null ? null : txFor(parsed.ns),
-          txEdges,
-          parsed,
-          (event) => pending.push(event),
-          signal,
-          (fn) => settled.push(fn),
-          singleFrameKeys.length
-        );
-        // Any refusal of this key (grant, policy, validation, a resolver's
-        // frame error) unwinds the bucket: the entries commit together or not at all.
-        const refused =
-          thrown || (envelope.errors ?? []).slice(errorsBefore).some((e) => e.path?.[0] === key);
-        if (refused) {
-          refusedKey = key;
-          throw new SharedTxRefusal();
-        }
-      }
-    };
-
-    try {
-      const scopeRefusal = await this.#inLocalTx(partition, runBody);
-      if (scopeRefusal !== undefined) {
-        addTopLevelError(envelope, scopeRefusal, 'cross_tx_scope_refused');
-        return;
-      }
-      committed = true;
-    } catch (err) {
-      if (!(err instanceof SharedTxRefusal)) throw err;
-      for (const key of singleFrameKeys) {
-        const ns = parsedByKey.get(key)?.ns;
-        // Virtual mutations ran outside the tx, so their results stand.
-        if (ns !== undefined && this.#namespaces.get(ns)?.virtual === true) continue;
-        // A key with neither data nor an error never ran: the refusal came
-        // first. It is marked too, so no key comes back empty.
-        if (!(key in envelope.data) && envelope.errors?.some((e) => e.path?.[0] === key)) {
-          continue;
-        }
-        delete envelope.data[key];
-        delete envelope.shapes[key];
-        addError(
-          envelope,
-          [key],
-          `mutate rolled back: '${refusedKey}' refused`,
-          'frame_rolled_back'
-        );
-      }
-      this.#metric('engine_frame_rolled_back', { key: refusedKey });
-      return;
-    } finally {
-      await this.#runSettled(settled, committed);
-    }
-    for (const event of pending) onWrite(event);
-  }
-
-  /**
-   * Runs `body` in one transaction over `partition`'s datasets and the edges.
-   * `single_dataset` shares that dataset's tx; `coalesced_tx_scope` needs
-   * `withScopedTransaction`, and without it resolves the refusal message
-   * instead of running `body`.
-   */
-  async #inLocalTx(
-    partition: TxPartition,
-    body: (txFor: (ns: string) => Dataset | null, txEdges: EdgesStore) => Promise<void>
-  ): Promise<string | undefined> {
-    if (partition.kind === 'single_dataset') {
-      // Virtual keys receive txDs too; #runEntry discards it by contract.
-      await this.#withRowsAndEdgesTx(partition.dataset, partition.entries[0]?.ns, (txDs, txEdges) =>
-        body(() => txDs, txEdges)
-      );
-      return undefined;
-    }
-    const firstDataset = partition.firstDataset;
-    const nsList = Array.from(new Set(partition.entries.map((e) => e.ns)));
-    if (firstDataset.withScopedTransaction === undefined) {
-      nsList.sort();
-      this.#metric('engine_cross_tx_scope_refused', { namespaces: nsList });
-      return `mutate cannot coalesce across [${nsList.join(', ')}]: tx scope '${firstDataset.txScopeId ?? 'unknown'}' does not support withScopedTransaction`;
-    }
-    await firstDataset.withScopedTransaction(nsList, async ({ datasets, edges }) => {
-      const txFor = (ns: string): Dataset | null => datasets.get(ns) ?? null;
-      if (edges !== null) await body(txFor, edges);
-      else await this.#edges.withTransaction((txEdges) => body(txFor, txEdges));
-    });
-    return undefined;
+    return this.#mutation.mutate(input);
   }
 
   /**
    * Runs a sketch as the caller: compiled against the schema the caller can
-   * read, every step through `#runEntry` in one transaction, write hooks on
+   * read, every step through `runEntry` in one transaction, write hooks on
    * commit only, and a result record only the caller can read.
    */
   async act(input: ActInput): Promise<ActResponse> {
-    if (input.mode !== undefined && input.mode !== 'write' && input.mode !== 'dry-run') {
-      return {
-        ok: false,
-        error: { code: 'bad_request', message: "mode must be 'write' or 'dry-run'" },
-        result: null
-      };
-    }
-    const identity = input.ctx.identity ?? null;
-    if (identity === null) {
-      return {
-        ok: false,
-        error: { code: 'unauthorized', message: 'act needs a signed caller' },
-        result: null
-      };
-    }
-    // Records and keys belong to the whole credential, so a narrower grant under the same id shares none.
-    const ownerKey = ownerKeyOf(identity);
-    const key = (input.mode ?? 'write') === 'write' ? input.idempotencyKey : undefined;
-    if (key === undefined) return this.#actRun(input, identity, ownerKey);
-    // The store sees the key only once the first run ends; a retry meanwhile joins that run.
-    const flightKey = `${ownerKey}\0${key}`;
-    const running = this.#inFlightActs.get(flightKey);
-    if (running !== undefined) return running;
-    const run = (async (): Promise<ActResponse> => {
-      const found = await this.#act.results.findByIdempotencyKey(ownerKey, key);
-      if (found !== undefined) {
-        return { ok: true, ack: found.ack ?? '', result: found.id, ...inlineFinds(found.steps) };
-      }
-      return this.#actRun(input, identity, ownerKey);
-    })();
-    this.#inFlightActs.set(flightKey, run);
-    try {
-      return await run;
-    } finally {
-      this.#inFlightActs.delete(flightKey);
-    }
+    return this.#acts.act(input);
   }
 
   async actResult(id: string, identity: Identity | null): Promise<ActResultRecord | undefined> {
-    return identity === null ? undefined : this.#act.results.get(id, ownerKeyOf(identity));
-  }
-
-  async #actRun(input: ActInput, identity: Identity, ownerKey: string): Promise<ActResponse> {
-    const { results, ttlMs, maxWriteSteps } = this.#act;
-    const mode = input.mode ?? 'write';
-    const schema: Record<string, Schema> = Object.fromEntries(
-      Object.entries(this.federatedSchema()).filter(
-        ([ns]) => checkIdentityGrant(identity, ns, 'query').ok
-      )
-    );
-    // The caller's pending words join their types; the cached schema is copied, never mutated.
-    // `identity.id` must name the principal propose_action records as the proposer (resolveIdentity(ctx).id).
-    const pendingKeys = new Set<string>();
-    for (const [qualified, words] of Object.entries(
-      this.#actionLayer?.pendingFor(identity.id) ?? {}
-    )) {
-      const [ns = '', typeName = ''] = qualified.split('/');
-      const nsSchema = schema[ns];
-      const type = nsSchema?.types[typeName];
-      if (nsSchema === undefined || type === undefined) continue;
-      const actions = { ...type.actions };
-      for (const [name, p] of Object.entries(words)) {
-        if (Object.hasOwn(actions, name)) continue;
-        actions[name] = { ...toActionSchema(p.decl), pending: { uses: p.uses, needed: p.needed } };
-        pendingKeys.add(`${qualified}.${name}`);
-      }
-      schema[ns] = { ...nsSchema, types: { ...nsSchema.types, [typeName]: { ...type, actions } } };
-    }
-    const localNamespaces = new Set(
-      [...this.#namespaces]
-        .filter(([ns, cfg]) => cfg.virtual !== true && this.#datasets.get(ns) !== undefined)
-        .map(([ns]) => ns)
-    );
-    const compiled = compileSketch(input.sketch, schema, {
-      ...(input.namespace !== undefined ? { defaultNamespace: input.namespace } : {}),
-      localNamespaces,
-      maxWriteSteps,
-      ...(this.#actionLayer !== undefined ? { defineKey: this.#actionLayer.proposeKey } : {})
-    });
-    if ('refusal' in compiled) return { ok: false, refusal: compiled.refusal };
-    if (!('plan' in compiled)) return { ok: true, help: compiled.help };
-    const { plan, help } = compiled;
-
-    // A proposal never shares a transaction, so a leading `define` commits first and the rest runs as one after it.
-    const [first] = plan.steps;
-    const coined =
-      first?.action === 'define' && plan.steps.length > 1
-        ? `${first.type}.${(first.params as { name: string }).name}`
-        : undefined;
-    if (coined !== undefined) pendingKeys.add(coined);
-    const phases =
-      coined !== undefined ? [plan.steps.slice(0, 1), plan.steps.slice(1)] : [plan.steps];
-    const outcomes: ActStepOutcome[] = [];
-    let error: { code: string; message: string; step?: number } | undefined;
-    for (const [i, steps] of phases.entries()) {
-      error = await this.#actPhase(input, mode, steps, outcomes);
-      if (error === undefined) continue;
-      if (i > 0 && mode === 'write') {
-        error = { ...error, message: `${error.message} (step 1 committed: ${coined} is defined)` };
-      }
-      break;
-    }
-    if (error === undefined && mode === 'write' && pendingKeys.size > 0) {
-      const used = new Map<string, { type: string; name: string }>();
-      for (const s of plan.steps) {
-        const k = `${s.type}.${s.action}`;
-        if (pendingKeys.has(k)) used.set(k, { type: s.type, name: s.action });
-      }
-      if (used.size > 0) {
-        try {
-          this.#actionLayer?.used(identity.id, [...used.values()], input.ctx.now ?? new Date());
-        } catch (err) {
-          // The write committed: a failing layer must not turn it into an error reply.
-          this.#metric('engine_act_layer_used_failed', {
-            error: err instanceof Error ? err.message : String(err)
-          });
-        }
-      }
-    }
-
-    const ack = formatAck(plan, outcomes, mode);
-    const id = newResultId();
-    const createdAt = new Date();
-    const record: ActResultRecord = {
-      id,
-      owner: identity.id,
-      ownerKey,
-      createdAt: createdAt.toISOString(),
-      expiresAt: new Date(createdAt.getTime() + ttlMs).toISOString(),
-      mode,
-      ok: error === undefined,
-      ...(error === undefined ? { ack } : { error }),
-      ...(error === undefined && mode === 'write' && input.idempotencyKey !== undefined
-        ? { idempotencyKey: input.idempotencyKey }
-        : {}),
-      schemaVersion: this.federatedSchemaVersion(),
-      sketch: input.sketch,
-      plan,
-      steps: outcomes
-    };
-    let result: string | null = id;
-    try {
-      await results.put(record, ttlMs);
-    } catch (err) {
-      // The write may have committed: failing the call would invite a retry that repeats it.
-      this.#metric('engine_act_result_store_failed', {
-        error: err instanceof Error ? err.message : String(err)
-      });
-      result = null;
-    }
-    return error === undefined
-      ? {
-          ok: true,
-          ack,
-          result,
-          ...inlineFinds(outcomes),
-          ...(mode === 'dry-run' ? { plan: plan.steps.map(planLine) } : {}),
-          ...(help !== undefined ? { help } : {})
-        }
-      : { ok: false, error, result };
-  }
-
-  /** Partitions `steps` by transaction scope and runs them as one transaction; resolves the failure, or undefined. */
-  async #actPhase(
-    input: ActInput,
-    mode: ActMode,
-    steps: ActPlanStep[],
-    outcomes: ActStepOutcome[]
-  ): Promise<{ code: string; message: string; step?: number } | undefined> {
-    // A crossRef `#N` is looked up on its target type, so that type joins the transaction.
-    const refTypes = steps.flatMap((s) =>
-      Object.values(s.late ?? {}).flatMap((l) => ('ref' in l ? [l.ref.type] : []))
-    );
-    const keys = [...new Set([...steps.map((s) => s.key), ...refTypes])];
-    const parsedByKey = this.#buildParsedKeyCache(keys);
-    const partition = partitionMutateByTxScope(keys, parsedByKey, this.#datasets);
-    if (partition.kind === 'cross_tx_scope_refused') {
-      this.#metric('engine_cross_tx_scope_refused', { namespaces: partition.namespaces });
-      return { code: 'cross_tx_scope_refused', message: partition.message };
-    }
-    // Unreachable: the compiler admits only namespaces with a dataset.
-    if (partition.kind === 'zero_datasets') throw new Error('act plan names no dataset');
-    return this.#actSteps(input, mode, steps, parsedByKey, partition, outcomes);
-  }
-
-  /**
-   * Runs `steps` in one transaction, filling late values as each step comes
-   * up, and dispatches their write events only if it commits. Pushes each
-   * step's outcome; resolves the failure, or undefined.
-   */
-  async #actSteps(
-    input: ActInput,
-    mode: ActMode,
-    steps: ActPlanStep[],
-    parsedByKey: Map<string, ParsedKey | null>,
-    partition: TxPartition,
-    outcomes: ActStepOutcome[]
-  ): Promise<{ code: string; message: string; step?: number } | undefined> {
-    const now = input.ctx.now ?? new Date();
-    const queryCtx = this.#buildContext({ ...input.ctx, now }, 'query');
-    const mutateCtx = this.#buildContext({ ...input.ctx, now }, 'mutate');
-    const pending: WriteEvent[] = [];
-    const settled: AfterTxWork[] = [];
-    const binds = new Map<string, unknown>();
-    let rowBudget = MAX_STORED_ROWS;
-    const body = async (
-      txFor: (ns: string) => Dataset | null,
-      txEdges: EdgesStore
-    ): Promise<void> => {
-      // One entry through the caller's grant and policy; any refusal fails `step`.
-      const run = async (
-        step: ActPlanStep,
-        key: string,
-        entry: FrameEntry,
-        operation: 'query' | 'mutate'
-      ): Promise<PackEnvelope> => {
-        const envelope = this.#makeEnvelope([key], parsedByKey);
-        const parsed = parsedByKey.get(key) ?? null;
-        const thrown = await this.#runEntry(
-          envelope,
-          key,
-          entry,
-          operation === 'query' ? queryCtx : mutateCtx,
-          operation,
-          parsed === null ? null : txFor(parsed.ns),
-          txEdges,
-          parsed,
-          (event) => pending.push(event),
-          input.signal,
-          (fn) => settled.push(fn),
-          steps.length
-        );
-        const refusal = envelope.errors?.find((e) => e.path?.[0] === key);
-        if (thrown || refusal !== undefined) {
-          throw new ActStepFailure({
-            code: refusal?.code ?? 'resolver_error',
-            // The resolver's shortId hint names a `where` shape no sketch writes.
-            message: refusal?.message.replace(idHint(''), '') ?? `'${key}' refused`,
-            step: step.step
-          });
-        }
-        return envelope;
-      };
-      const maxLimit = input.pageLimits?.maxLimit;
-      for (const step of steps) {
-        const params = { ...step.params };
-        if (step.action === 'find' && maxLimit !== undefined) {
-          params.limit = Math.min(Number(params.limit), maxLimit);
-        }
-        for (const [field, late] of Object.entries(step.late ?? {})) {
-          if ('bind' in late) params[field] = binds.get(late.bind);
-          else if ('now' in late) params[field] = now.toISOString();
-          else {
-            const { type, shortId } = late.ref;
-            const where = { shortId: { eq: shortId } };
-            const found = await run(
-              step,
-              type,
-              { params: { where, limit: 1 }, fields: { id: true } },
-              'query'
-            );
-            const row = (found.data[type] as Row[] | undefined)?.[0];
-            if (row === undefined) {
-              throw new ActStepFailure({
-                code: 'not_found',
-                message: `no ${type} #${shortId}`,
-                step: step.step
-              });
-            }
-            params[field] = row.id;
-          }
-        }
-        const envelope = await run(step, step.key, { params, fields: step.fields }, step.operation);
-        const outcome = stepOutcome(step, envelope, rowBudget);
-        rowBudget -= outcome.rows?.length ?? 0;
-        if (step.bind !== undefined) binds.set(step.bind, outcome.touched?.[0]?.id);
-        outcomes.push(outcome);
-      }
-      if (mode === 'dry-run') throw new ActDryRunRollback();
-    };
-    let committed = false;
-    try {
-      const scopeRefusal = await this.#inLocalTx(partition, body);
-      if (scopeRefusal !== undefined) {
-        return { code: 'cross_tx_scope_refused', message: scopeRefusal };
-      }
-      committed = true;
-      this.#subscribe.dispatchWrites(pending);
-      if (this.#committed.active) {
-        this.#committed.queue(pending, actorOf(input.ctx.identity ?? null));
-      }
-      return undefined;
-    } catch (err) {
-      if (err instanceof ActStepFailure) return err.error;
-      if (err instanceof ActDryRunRollback) return undefined;
-      throw err;
-    } finally {
-      await this.#runSettled(settled, committed);
-    }
-  }
-
-  /**
-   * A list read on a dataset-backed type gets the default page when it names
-   * no `limit`, and is refused above the maximum. Virtual types own their
-   * params, so they pass through untouched.
-   */
-  #applyPageLimits(
-    envelope: PackEnvelope,
-    key: string,
-    input: FrameEntry,
-    parsed: ParsedKey | null,
-    limits: EngineInput['pageLimits']
-  ): FrameEntry | null {
-    let entry = input;
-    if (limits === undefined || parsed === null) return entry;
-    const nsCfg = this.#namespaces.get(parsed.ns);
-    if (nsCfg === undefined || nsCfg.virtual === true) return entry;
-    if (nsCfg.registry.get(parsed.name)?.kind !== 'type') return entry;
-    // A nested `{ _walk }` selection's limit has the same max; it has no cursor in v1.
-    const nested = nestedOverLimit(entry.fields, ['fields'], limits.maxLimit);
-    if (nested !== null) {
-      addError(
-        envelope,
-        [key, ...nested],
-        `nested limit exceeds the maximum page of ${limits.maxLimit}`,
-        'limit_exceeds_max',
-        { max: limits.maxLimit }
-      );
-      return null;
-    }
-    // A nested selection without a limit gets the default page, as a row read does.
-    if (entry.fields !== undefined) {
-      entry = { ...entry, fields: withNestedDefaultLimits(entry.fields, limits.defaultLimit) };
-    }
-    const limit = entry.params?.limit;
-    if (limit === undefined || limit === null) {
-      return { ...entry, params: { ...entry.params, limit: limits.defaultLimit } };
-    }
-    // Anything a reader might take as "no limit" is refused, not passed on.
-    if (typeof limit !== 'number' || !Number.isInteger(limit) || limit < 0) {
-      addError(envelope, [key, 'limit'], 'limit must be a non-negative integer', 'invalid_limit');
-      return null;
-    }
-    if (limit > limits.maxLimit) {
-      addError(
-        envelope,
-        [key, 'limit'],
-        `limit ${limit} exceeds the maximum page of ${limits.maxLimit}; ${
-          entry.params?.aggregate !== undefined
-            ? 'page with offset'
-            : 'page with the returned cursor'
-        }`,
-        'limit_exceeds_max',
-        { max: limits.maxLimit }
-      );
-      return null;
-    }
-    return entry;
-  }
-
-  /** Runs `afterTx` work; a failure is reported, never allowed to replace the frame's outcome. */
-  async #runSettled(settled: AfterTxWork[], committed: boolean): Promise<void> {
-    for (const fn of settled) {
-      try {
-        await fn({ committed });
-      } catch (err) {
-        this.#metric('engine_after_tx_failed', {
-          message: err instanceof Error ? err.message : String(err)
-        });
-      }
-    }
-  }
-
-  /**
-   * Write the idempotency cache entry (when enabled + zero errors) and return
-   * the envelope. Shared by the local-tx and bridge-only exit paths of
-   * `mutate` so both honour the dedup contract.
-   */
-  async #finaliseMutateEnvelope(
-    envelope: PackEnvelope,
-    keys: string[],
-    resolution:
-      | { kind: 'absent' }
-      | { kind: 'present'; value: string }
-      | { kind: 'conflict'; values: string[] },
-    callerKey: string
-  ): Promise<PackEnvelope> {
-    // Cache once any key has data, i.e. ran and was not rolled back: a reply
-    // that is error-free is not the test, since a refused sibling leaves the
-    // committed keys in place and a retry would run them again. A frame where
-    // nothing ran stays uncached, so its retry runs.
-    if (
-      resolution.kind === 'present' &&
-      this.#idempotency !== undefined &&
-      keys.some((key) => key in envelope.data)
-    ) {
-      const dedupKey = makeDedupKey(keys, resolution.value, callerKey);
-      // The write has committed: failing the call now would invite the retry
-      // that duplicates it.
-      try {
-        await this.#idempotency.store.put(dedupKey, envelope, this.#idempotency.defaultTtlMs);
-        this.#metric('engine_idempotency_put', { dedupKey });
-      } catch (err) {
-        this.#metric('engine_idempotency_put_failed', {
-          dedupKey,
-          error: err instanceof Error ? err.message : String(err)
-        });
-      }
-    }
-    return envelope;
-  }
-
-  /**
-   * Inspect the frame for an `idempotencyKey`. Multiple entries carrying the
-   * field must agree; a mismatch is a caller bug and we refuse the whole frame.
-   *
-   * Array (batched) op-keys are excluded from this frame-level check: each
-   * array element carries its OWN idempotencyKey and is deduped per-frame
-   * against a key that includes the array index (§5.13, batched mutate).
-   * Frame-level dedup continues to apply only to single-frame op-keys.
-   */
-  #resolveFrameIdempotencyKey(
-    frame: QualifiedFrame
-  ):
-    | { kind: 'absent' }
-    | { kind: 'present'; value: string }
-    | { kind: 'conflict'; values: string[] } {
-    const seen = new Set<string>();
-    for (const entry of Object.values(frame)) {
-      if (Array.isArray(entry)) continue;
-      if (entry.idempotencyKey !== undefined) seen.add(entry.idempotencyKey);
-    }
-    if (seen.size === 0) return { kind: 'absent' };
-    if (seen.size === 1) {
-      const [value] = seen;
-      return { kind: 'present', value: value as string };
-    }
-    return { kind: 'conflict', values: Array.from(seen).sort() };
-  }
-
-  #buildParsedKeyCache(keys: string[]): Map<string, ParsedKey | null> {
-    const parsedByKey = new Map<string, ParsedKey | null>();
-    for (const key of keys) {
-      parsedByKey.set(key, parseQualifiedKey(key));
-    }
-    return parsedByKey;
-  }
-
-  /**
-   * A row-filtered page, built so that what it says about the rows after it
-   * depends only on rows the caller may see. Reads on past hidden rows, a
-   * chunk at a time, until the page holds `limit` visible ones and one more
-   * has been seen: that one is what `hasMore` reports, and the next page
-   * starts just before it.
-   */
-  async #fillFilteredPage(
-    first: ReadResult,
-    read: (cursor: string, limit: number) => unknown,
-    visible: (rows: Row[]) => Row[],
-    limit: unknown
-  ): Promise<ReadResult> {
-    const want = typeof limit === 'number' && limit > 0 ? limit : Math.max(first.rows.length, 1);
-    // shortcut: scans at most ROW_FILTER_SCAN_ROWS rows per read (ten pages' worth if that is more), then answers hasMore with a cursor so the caller pages on; a longer run of hidden rows still shows as empty pages, raise it if callers meet them.
-    const budget = Math.max(ROW_FILTER_SCAN_ROWS, 10 * (want + 1));
-    const after = (r: ReadResult) => (r.hasMore ? r.nextCursor : undefined);
-    const page = async (cursor: string, n: number): Promise<ReadResult> => {
-      const r = await read(cursor, n);
-      return isReadResult(r) ? r : { rows: [], hasMore: false };
-    };
-    const rows = visible(first.rows);
-    let scanned = first.rows.length;
-    // Where the unread rows start; undefined at the end of the data.
-    let cursor = after(first);
-
-    while (cursor !== undefined && scanned < budget) {
-      const from = cursor;
-      const need = want - rows.length;
-      const chunk = await page(from, Math.max(need, ROW_FILTER_CHUNK));
-      scanned += chunk.rows.length;
-      const seen = visible(chunk.rows);
-      if (seen.length <= need && need > 0) {
-        rows.push(...seen);
-        cursor = after(chunk);
-        continue;
-      }
-      if (seen.length === 0) {
-        cursor = after(chunk);
-        continue;
-      }
-      // A visible row past the page: the next page starts before it.
-      if (need === 0) return { rows, hasMore: true, nextCursor: from };
-      // The chunk holds more visible rows than the page lacks. Keep those it
-      // lacks, and re-read up to the last one kept for the cursor that ends there.
-      const kept = new Set(seen.slice(0, need));
-      const last = chunk.rows.findLastIndex((r) => kept.has(r));
-      rows.push(...seen.slice(0, need));
-      const end = after(await page(from, last + 1));
-      return {
-        rows,
-        hasMore: end !== undefined,
-        ...(end !== undefined ? { nextCursor: end } : {})
-      };
-    }
-    // Out of budget with rows unread: the caller pages on from where the scan stopped.
-    return cursor === undefined
-      ? { rows, hasMore: false }
-      : { rows, hasMore: true, nextCursor: cursor };
-  }
-
-  /**
-   * §5.12 per-frame grant gate (namespace and capability). Records the refusal
-   * under `key` and returns true when `identity` may not run `operation` in
-   * `ns`. Bridged keys pass through here too, before they are proxied.
-   */
-  /**
-   * Whether every namespace the walks of a bridged query entry reach is one
-   * `identity` may read. Each hop is resolved from the schema cached for the
-   * bridge. A far namespace other than the entry's own counts as readable only
-   * when a bridge to the same peer serves it here under its own name and the
-   * caller holds `read` on it, so the walk shows nothing a direct read would
-   * not. A hop that cannot be resolved is not readable.
-   */
-  #bridgedWalksReadable(
-    alias: string,
-    type: string,
-    entry: FrameEntry,
-    identity: RequestContext['identity'] | null | undefined
-  ): boolean {
-    const frame = entry as Record<string, unknown>;
-    const params = frame.params as Record<string, unknown> | null | undefined;
-    const groupBy = params?.groupBy;
-    // Walked group keys are read from an object `groupBy` only.
-    if (groupBy !== undefined && (typeof groupBy !== 'object' || Array.isArray(groupBy)))
-      return false;
-
-    const cached = this.#schema.bridgeSchemas(alias);
-    const peer = this.#bridges.get(alias)?.baseUrl;
-    const fieldsOf = (ref: TypeRef): Record<string, FieldDef> | undefined => {
-      const types = cached?.schemas[ref.ns]?.types;
-      return types !== undefined && Object.hasOwn(types, ref.type)
-        ? types[ref.type]?.fields
-        : undefined;
-    };
-    const readable = (ns: string): boolean =>
-      ns === cached?.ns ||
-      (!this.#namespaces.has(ns) &&
-        !this.#datasets.has(ns) &&
-        peer !== undefined &&
-        this.#bridges.get(ns)?.baseUrl === peer &&
-        this.#schema.bridgeSchemas(ns)?.ns === ns &&
-        checkIdentityGrant(identity, ns, 'query').ok);
-
-    let ok = true;
-    forEachWalkHop(frame, { ns: cached?.ns ?? alias, type }, (hop, near) => {
-      const far = cached === undefined ? undefined : hopFarType(hop.node, near, fieldsOf);
-      if (far !== undefined && readable(far.ns)) return far;
-      ok = false;
-      return undefined;
-    });
-    return ok;
-  }
-
-  #refuseUngranted(
-    envelope: PackEnvelope,
-    key: string,
-    ns: string,
-    identity: RequestContext['identity'] | null | undefined,
-    operation: 'query' | 'mutate'
-  ): boolean {
-    const nsGate = checkIdentityGrant(identity, ns, operation);
-    if (nsGate.ok) return false;
-    addError(envelope, [key], grantRefusal(ns, nsGate), grantRefusalCode(nsGate));
-    this.#metric('engine_unauthorized_namespace', { key, ns, reason: nsGate.reason });
-    return true;
+    return this.#acts.actResult(id, identity);
   }
 
   #makeEnvelope(keys: string[], parsedByKey: Map<string, ParsedKey | null>): PackEnvelope {
@@ -1879,1257 +747,6 @@ export class Engine implements ActHandle {
       version = this.federatedSchemaVersion();
     }
     return { schemaVersion: version, data: {}, shapes: {} };
-  }
-
-  #buildContext(
-    caller: Partial<RequestContext>,
-    operation: 'query' | 'mutate'
-  ): Omit<RequestContext, 'namespace'> {
-    // namespace is filled per-entry in #runEntry. Caller-supplied namespace /
-    // operation are ignored — the engine is authoritative for both.
-    const base: Omit<RequestContext, 'namespace'> = {
-      identity: caller.identity ?? null,
-      operation,
-      now: caller.now ?? new Date(),
-      headers: caller.headers ?? {},
-      meta: caller.meta ?? {}
-    };
-    if (caller.clientIp !== undefined) base.clientIp = caller.clientIp;
-    return base;
-  }
-
-  /** Resolves true when the resolver refused with a `ResolverFrameError`. */
-  async #runEntry(envelope: PackEnvelope, key: string, ...rest: RunEntryRest): Promise<boolean> {
-    const hook = this.#onResolve;
-    if (hook === undefined) return this.#runEntryInner(envelope, key, ...rest);
-    const kind = rest[2];
-    // Caller-controlled bytes must not reach the stats: a key that names no
-    // live local entry is recorded under one sentinel (the error code says why).
-    const parsedKey = rest[5];
-    const obsKey =
-      parsedKey !== null && this.#namespaces.get(parsedKey.ns)?.registry.get(parsedKey.name)
-        ? key
-        : '(unknown)';
-    const callerId = rest[1].identity?.id;
-    const caller = callerId !== undefined ? { caller: callerId } : {};
-    const before = envelope.errors?.length ?? 0;
-    const t0 = performance.now();
-    const emit = (o: Omit<ResolveObservation, 'key' | 'kind' | 'durationMs' | 'caller'>): void =>
-      observe(hook, {
-        key: obsKey,
-        kind,
-        durationMs: performance.now() - t0,
-        ...caller,
-        ...o
-      });
-    let refused: boolean;
-    try {
-      refused = await this.#runEntryInner(envelope, key, ...rest);
-    } catch (err) {
-      emit({
-        ok: false,
-        code: isResolverFrameError(err) ? err.code : 'exception',
-        message: err instanceof Error ? err.message : String(err)
-      });
-      throw err;
-    }
-    // Query keys run concurrently over one shared envelope: attribute by path,
-    // never by length.
-    const mine = (envelope.errors ?? [])
-      .slice(before)
-      .find((e) => Array.isArray(e.path) && e.path[0] === key);
-    emit(
-      mine === undefined
-        ? { ok: true }
-        : {
-            ok: false,
-            ...(mine.code !== undefined ? { code: mine.code } : {}),
-            message: mine.message
-          }
-    );
-    return refused;
-  }
-
-  /**
-   * Far-type resolution for the metadata rewrite, each far type in its own
-   * namespace; a hop that does not resolve, or that `walk` refuses, is left to
-   * the validator.
-   */
-  #metadataHop(ns: string, from: string, walk: WalkResolvers | undefined): MetadataHop {
-    const tools = this.#walkTools(ns, walk);
-    const hopFrom =
-      (type: TypeRef): MetadataHop =>
-      (node) => {
-        let far: TypeRef;
-        try {
-          far = tools.resolve(node, type, []);
-        } catch {
-          return undefined;
-        }
-        const fields = tools.schemaOf(far)?.fields;
-        return fields !== undefined ? { fields, hop: hopFrom(far) } : undefined;
-      };
-    return hopFrom({ ns, type: from });
-  }
-
-  /**
-   * Hop resolution, field declarations and natural order for walks seeded in
-   * `ns`, each far type read in its own namespace. Hops leave `ns` only as
-   * `walk` allows.
-   */
-  #walkTools(
-    ns: string,
-    walk?: WalkResolvers
-  ): Omit<WalkScan, 'sites'> & { schemaOf: (ref: TypeRef) => TypeSchema | undefined } {
-    const types = this.schemaFor(ns).types;
-    const schemaOf = (ref: TypeRef) => {
-      const own = ref.ns === ns ? types : walk?.schemaOf?.(ref.ns);
-      return own !== undefined && Object.hasOwn(own, ref.type) ? own[ref.type] : undefined;
-    };
-    return {
-      resolve: hopResolver(ns, types, walk),
-      schemaOf,
-      fieldsOf: (ref) => schemaOf(ref)?.fields,
-      naturalOrder: (ref) => naturalOrderOf(schemaOf(ref) ?? {})
-    };
-  }
-
-  /**
-   * What lets a walk seeded on the `seed` dataset leave its namespace, for
-   * `identity`: its read grant on the far namespace (the same check as every
-   * read gate), then a far type that is stored (or bridged, which the store
-   * rule then refuses), then a far namespace whose dataset this engine holds,
-   * that is not bridged and that shares the seed's store.
-   */
-  #walkResolvers(
-    identity: RequestContext['identity'] | null | undefined,
-    seed: Dataset | undefined
-  ): WalkResolvers {
-    const storeOf = (d: Dataset) => d.walkStoreId ?? d.txScopeId;
-    const bridged = (n: string) => !this.#namespaces.has(n) && this.#bridges.has(n);
-    return {
-      schemaOf: (n) =>
-        this.#isLive(n)
-          ? this.schemaFor(n).types
-          : bridged(n)
-            ? this.federatedSchema()[n]?.types
-            : undefined,
-      canRead: (n) => checkIdentityGrant(identity, n, 'query').ok,
-      isStoredType: (ref) => {
-        if (bridged(ref.ns)) return true;
-        const entry = this.typeEntry(ref.ns, ref.type);
-        return entry !== undefined && this.#isStoredEntry(entry);
-      },
-      walkable: (n) => {
-        // Refuses an unregistered namespace only where the registry has no factory: a factory builds one on `get`.
-        const far = bridged(n) ? undefined : this.#datasets.get(n);
-        return far !== undefined && seed !== undefined && storeOf(far) === storeOf(seed);
-      },
-      namespaceNames: [...this.#namespaces.keys()]
-    };
-  }
-
-  /**
-   * The walk sites of a walk-grammar query frame, or undefined for an ordinary
-   * one, each far type in its own namespace. Asked only of a frame the walk
-   * gate passed, with the `walk` resolvers it passed under.
-   */
-  #walkSitesOf(
-    frame: FrameEntry,
-    ns: string,
-    seed: string,
-    walk: WalkResolvers | undefined
-  ): WalkScan | undefined {
-    if (!usesWalkGrammar(frame as Record<string, unknown>)) return undefined;
-    const tools = this.#walkTools(ns, walk);
-    try {
-      const sites = walkSites(
-        frame as Record<string, unknown>,
-        { ns, type: seed },
-        tools.resolve,
-        tools.naturalOrder
-      );
-      return { sites, ...tools };
-    } catch {
-      // A describer never fails the read.
-      return undefined;
-    }
-  }
-
-  /**
-   * The frame's clauses marked index-served (goal 7), from the store's index
-   * plans, each type's asked of its own namespace's dataset. Undefined when
-   * the store has none (memory) or any type's plan is unknown: a plan that
-   * cannot be judged is omitted, never guessed.
-   */
-  async #walkPlan(
-    dataset: Dataset,
-    key: string,
-    frame: FrameEntry,
-    ns: string,
-    seed: string,
-    scan: WalkScan
-  ): Promise<PlanClause[] | undefined> {
-    if (dataset.indexPlan === undefined) return undefined;
-    const qualified = (r: TypeRef) => `${r.ns}/${r.type}`;
-    const types = new Map(
-      [{ ns, type: seed }, ...scan.sites.map((s) => s.far)].map((r) => [qualified(r), r])
-    );
-    let plans: Array<IndexPlan | undefined>;
-    try {
-      plans = await Promise.all(
-        [...types.values()].map((r) =>
-          (r.ns === ns ? dataset : this.#datasets.get(r.ns))?.indexPlan?.(r.type, r.ns)
-        )
-      );
-    } catch (err) {
-      this.#metric('engine_walk_plan_failed', {
-        key,
-        error: err instanceof Error ? err.message : String(err)
-      });
-      return undefined;
-    }
-    if (plans.some((p) => p === undefined)) return undefined;
-    const byType = new Map([...types.keys()].map((t, i) => [t, plans[i]?.indexes ?? []]));
-    return classifyWalkService(
-      {
-        entry: frame as Record<string, unknown>,
-        seed: { ns, type: seed },
-        resolve: scan.resolve,
-        fieldsOf: scan.fieldsOf,
-        naturalOrder: scan.naturalOrder
-      },
-      (r) => byType.get(qualified(r)) ?? []
-    );
-  }
-
-  /**
-   * Fail-closed policy for walk grammar (spec §2, §3). A walk is a read of
-   * every type it touches: each walked, aggregated or nested type's read
-   * policy runs in that type's own namespace with the walk's own `where`, and
-   * a deny refuses the frame. Any obligation, on a walked type or on the seed,
-   * is refused too: obligations filter rows after the read, which cannot reach
-   * rows a walk counted, aggregated or joined. A walked type in another
-   * namespace must be on a store that answers walks. Records the error and
-   * returns true on refusal. A frame that passes with a walk into another
-   * namespace carries the federated schema version, as a multi-namespace
-   * frame does.
-   */
-  #refuseWalkPolicy(
-    envelope: PackEnvelope,
-    key: string,
-    frame: FrameEntry,
-    ns: string,
-    seed: string,
-    ctx: RequestContext,
-    decision: PolicyDecision,
-    walk: WalkResolvers | undefined,
-    isVirtual: boolean
-  ): boolean {
-    const seedPath = walkGrammarPath(frame as Record<string, unknown>);
-    if (seedPath === null) return false;
-    const blocked = (d: PolicyDecision) => (d.obligations?.length ?? 0) > 0;
-    const refuse = (path: string[], message: string, code: string) => {
-      addError(envelope, [key, ...path], message, code);
-      this.#metric('engine_walk_policy_refused', { key, code, path });
-      return true;
-    };
-    if (blocked(decision)) {
-      return refuse(
-        seedPath,
-        `'${ns}/${seed}' is row-filtered for this caller, so it cannot be walked from, counted or aggregated`,
-        ROW_POLICY_BLOCKS_WALK
-      );
-    }
-    // A virtual frame holds no walk (refused earlier), and its own params are its resolver's, not walk hops.
-    if (isVirtual) return false;
-    const types = this.schemaFor(ns).types;
-    let walked: WalkedType[];
-    try {
-      walked = walkedTypes(
-        frame as Record<string, unknown>,
-        { ns, type: seed },
-        hopResolver(ns, types, walk)
-      );
-    } catch {
-      // Validation already resolved every hop; one that no longer resolves is refused, not skipped.
-      return refuse(seedPath, 'a walk in this frame does not resolve', 'policy_denied');
-    }
-    for (const { ref, where, unfiltered, path } of walked) {
-      if (ref.ns !== ns && this.#datasets.get(ref.ns)?.capabilities.walks !== true) {
-        return refuse(path, `the '${ref.ns}' store does not answer walks`, WALKS_UNSUPPORTED_STORE);
-      }
-      const d = this.evaluateReadPolicy(ref.ns, ref.type, ctx.identity ?? null, ctx, {
-        params: where !== undefined && unfiltered !== true ? { where } : {}
-      });
-      if (!d.allow) return refuse(path, d.reason ?? 'policy denied', 'policy_denied');
-      if (blocked(d)) {
-        return refuse(
-          path,
-          `'${ref.ns}/${ref.type}' is row-filtered for this caller, so a walk cannot read it`,
-          ROW_POLICY_BLOCKS_WALK
-        );
-      }
-    }
-    if (walked.some((w) => w.ref.ns !== ns)) envelope.schemaVersion = this.federatedSchemaVersion();
-    return false;
-  }
-
-  /** An unqualified key's refusal, naming the fix when one is evident. */
-  #unqualifiedMessage(key: string): string {
-    if (key === 'params' || key === 'fields' || key === 'where') {
-      return `'${key}' is part of a frame, not a frame key: send { "<ns>/<op>": { "params": {...}, "fields": {...} } }`;
-    }
-    const owners = [...this.#namespaces].filter(([, cfg]) => cfg.registry.get(key) !== undefined);
-    const hint = owners.length === 1 ? ` — did you mean '${owners[0]?.[0]}/${key}'?` : '';
-    return `unqualified frame key '${key}' — expected '<ns>/<name>'${hint}`;
-  }
-
-  /**
-   * Everything a frame entry does before its resolver runs: the grant, the
-   * lookups, policy, the walk refusals, the filter guard, the cursor and the
-   * resolver args. Synchronous. Returns null once it has recorded a refusal.
-   */
-  #prepareEntry(
-    envelope: PackEnvelope,
-    key: string,
-    entry: FrameEntry,
-    ctxBase: Omit<RequestContext, 'namespace'>,
-    operation: 'query' | 'mutate',
-    tx: Dataset | null,
-    txEdges: EdgesStore | null,
-    parsed: ParsedKey | null,
-    onWrite?: (event: WriteEvent) => void,
-    signal?: AbortSignal,
-    afterTx?: (fn: AfterTxWork) => void,
-    txEntries?: number
-  ): PreparedEntry | null {
-    if (!parsed) {
-      addError(envelope, [key], this.#unqualifiedMessage(key), 'unqualified_key');
-      this.#metric('engine_unqualified_key', key);
-      return null;
-    }
-
-    const badKeys = unknownFrameKeyMessage(entry);
-    if (badKeys !== null) {
-      addError(envelope, [key], badKeys, 'unknown_frame_key');
-      this.#metric('engine_unknown_frame_key', key);
-      return null;
-    }
-
-    const { ns, name } = parsed;
-
-    // §5.12 per-frame grant gate (namespace and capability). Per-key failure —
-    // other keys in the same payload still resolve.
-    if (this.#refuseUngranted(envelope, key, ns, ctxBase.identity, operation)) return null;
-
-    if (this.#tombstoned.has(ns)) {
-      addError(envelope, [key], `namespace '${ns}' was deleted`, 'namespace_tombstoned');
-      this.#metric('engine_namespace_tombstoned_reject', { key, ns });
-      return null;
-    }
-
-    const nsCfg = this.#namespaces.get(ns);
-    if (!nsCfg) {
-      addError(envelope, [key], `unknown namespace '${ns}'`, 'unknown_namespace');
-      this.#metric('engine_unknown_namespace', ns);
-      return null;
-    }
-
-    // Virtual namespaces own no storage: skip the dataset
-    // requirement and leave args.dataset undefined. A tx from a mixed mutate
-    // payload (a virtual key riding inside another ns's dataset tx) is
-    // deliberately NOT threaded — virtual mutations are non-transactional with
-    // dataset mutations by contract; the resolver computes from params/fields.
-    const isVirtual = nsCfg.virtual === true;
-    const dataset = isVirtual ? undefined : (tx ?? this.#datasets.get(ns));
-    if (!isVirtual && !dataset) {
-      // Query path: we didn't pre-resolve. A namespace registered in
-      // `namespaces` but missing from `datasets` is a misconfiguration — same
-      // error code as "ns not present at all" so callers have one thing to fix.
-      addError(envelope, [key], `unknown namespace '${ns}'`, 'unknown_namespace');
-      this.#metric('engine_unknown_namespace', ns);
-      return null;
-    }
-
-    const registryEntry = nsCfg.registry.get(name);
-    if (!registryEntry) {
-      addError(envelope, [key], `unknown name '${name}' in namespace '${ns}'`, 'unknown_name');
-      this.#metric('engine_unknown_name', { ns, name });
-      return null;
-    }
-
-    // The gate above judged the route's operation; the entry decides what it
-    // does. get<T> is registered as a mutation and is the one that only reads.
-    const reads = registryEntry.kind !== 'mutation' || registryEntry.verb === 'get';
-    if (operation === 'query' && !reads) {
-      // A write here would run with no transaction, unseen by subscribers.
-      addError(
-        envelope,
-        [key],
-        `cannot query mutation '${key}' — send it to mutate`,
-        'mutation_on_query'
-      );
-      this.#metric('engine_mutation_on_query', { key });
-      return null;
-    }
-    if (
-      operation === 'mutate' &&
-      reads &&
-      this.#refuseUngranted(envelope, key, ns, ctxBase.identity, 'query')
-    )
-      return null;
-
-    // A by-filter mutation's `where` is a query's `where` on its target type.
-    const filterTarget = operation === 'mutate' ? registryEntry.filterTarget : undefined;
-    // What lets this read's walks leave `ns`, judged for this caller.
-    const walk =
-      operation === 'query' &&
-      registryEntry.kind === 'type' &&
-      usesWalkGrammar(entry as Record<string, unknown>)
-        ? this.#walkResolvers(ctxBase.identity, dataset)
-        : undefined;
-    // Metadata spellings the read path returns (`createdBy`, `_metadata`, …)
-    // reach policy, validation and the resolver as the canonical columns.
-    const frame =
-      operation === 'query' && registryEntry.kind === 'type'
-        ? withCanonicalMetadataFilters(
-            entry,
-            registryEntry.fields,
-            walk !== undefined ? this.#metadataHop(ns, name, walk) : undefined
-          )
-        : filterTarget !== undefined
-          ? withCanonicalMetadataFilters(entry, nsCfg.registry.get(filterTarget)?.fields ?? {})
-          : entry;
-
-    // Thread the entry name + autoCRUD verb so policies can discriminate
-    // resolvers (get<T> vs delete<T> otherwise look identical).
-    const ctx: RequestContext = {
-      ...ctxBase,
-      namespace: ns,
-      operation,
-      entry: name,
-      ...(registryEntry.verb !== undefined ? { verb: registryEntry.verb } : {})
-    };
-    const args = toResolverArgs(
-      frame,
-      dataset,
-      txEdges ?? this.#edges,
-      onWrite,
-      signal,
-      (ns) => this.#datasets.get(ns),
-      afterTx,
-      txEntries
-    );
-    const decision = evaluatePolicy(registryEntry.policy, ctx, args);
-
-    if (!decision.allow) {
-      addError(envelope, [key], decision.reason ?? 'policy denied', 'policy_denied');
-      this.#metric('engine_policy_denied', { key, reason: decision.reason });
-      return null;
-    }
-    // A row filter reads the whole row, so the substrate must not narrow it to
-    // the caller's selection; the transport projects the response.
-    if ((decision.obligations?.length ?? 0) > 0) delete args.fields;
-    if (filterTarget !== undefined) args.filterWriteLimits = this.#filterWriteLimits;
-
-    // Neither path validates walk grammar, so both refuse it whatever the flag:
-    // a mutation's returned-row selection, and a virtual resolver's input.
-    if (operation === 'mutate') {
-      const walkPath = walkGrammarPath({
-        fields: frame.fields,
-        ...(filterTarget !== undefined ? { params: { where: frame.params?.where } } : {})
-      });
-      if (walkPath) {
-        addError(
-          envelope,
-          [key, ...walkPath],
-          'walks are not available in a mutation',
-          WALKS_IN_MUTATION
-        );
-        return null;
-      }
-    } else if (isVirtual) {
-      // Only where and fields: a virtual resolver's own params may be named
-      // count, aggregate, groupBy, having or offset (#1822).
-      const walkPath = walkGrammarPath(frame as Record<string, unknown>, { walkParams: false });
-      if (walkPath) {
-        addError(
-          envelope,
-          [key, ...walkPath],
-          'walks are not available on virtual types',
-          WALK_UNSUPPORTED_REF
-        );
-        return null;
-      }
-    }
-
-    if (
-      operation === 'query' &&
-      registryEntry.kind === 'type' &&
-      !isVirtual &&
-      // Fail closed: no dataset answers no walks.
-      dataset?.capabilities.walks !== true
-    ) {
-      const walkPath = walkGrammarPath(frame as Record<string, unknown>);
-      if (walkPath) {
-        addError(
-          envelope,
-          [key, ...walkPath],
-          `the '${ns}' store does not answer walks`,
-          WALKS_UNSUPPORTED_STORE
-        );
-        return null;
-      }
-    }
-
-    // Filter validation (§5.2) lives in `./filter-guard.js` — same contract:
-    // `false` means an error was recorded and dispatch must not proceed.
-    const guardOk = runFilterGuard(this.#guardDeps, {
-      envelope,
-      key,
-      entry: frame,
-      ns,
-      name,
-      operation,
-      entryKind: registryEntry.kind,
-      isVirtual,
-      dataset,
-      ...(filterTarget !== undefined ? { filterTarget } : {}),
-      ...(walk !== undefined ? { walk } : {})
-    });
-    if (!guardOk) return null;
-
-    if (
-      operation === 'query' &&
-      registryEntry.kind === 'type' &&
-      this.#refuseWalkPolicy(envelope, key, frame, ns, name, ctx, decision, walk, isVirtual)
-    ) {
-      return null;
-    }
-
-    // A query reads in the type's natural order unless it names one.
-    if (operation === 'query' && !isVirtual) {
-      const params = withNaturalOrder(args.params, registryEntry, dataset);
-      if (params !== undefined) args.params = params;
-    }
-
-    const cursor = args.params?.cursor;
-    if (typeof cursor === 'string') {
-      // Under a row filter only a sealed cursor is accepted: that is all this
-      // entry ever hands out.
-      const filtering = (decision.obligations?.length ?? 0) > 0;
-      const opened = filtering && !isSealedCursor(cursor) ? null : openCursor(cursor);
-      if (opened === null) {
-        addError(envelope, [key], 'cursor is not one this server issued', 'invalid_cursor');
-        return null;
-      }
-      args.params = { ...args.params, cursor: opened };
-    }
-
-    const walkScan =
-      operation === 'query' && registryEntry.kind === 'type' && !isVirtual
-        ? this.#walkSitesOf(frame, ns, name, walk)
-        : undefined;
-    // A nested walk list reads in its far type's natural order unless it names one (#1821),
-    // even when the plan's describer gave up; validation resolved every hop, so this does not throw.
-    if (
-      operation === 'query' &&
-      registryEntry.kind === 'type' &&
-      !isVirtual &&
-      args.fields !== undefined &&
-      usesWalkGrammar(frame as Record<string, unknown>)
-    ) {
-      const tools = walkScan ?? this.#walkTools(ns, walk);
-      args.fields = withNestedNaturalOrder(
-        args.fields,
-        { ns, type: name },
-        tools.resolve,
-        tools.naturalOrder
-      );
-    }
-    return {
-      registryEntry,
-      frame,
-      ctx,
-      args,
-      decision,
-      ns,
-      name,
-      isVirtual,
-      dataset,
-      walkScan
-    };
-  }
-
-  async #runEntryInner(
-    envelope: PackEnvelope,
-    key: string,
-    entry: FrameEntry,
-    ctxBase: Omit<RequestContext, 'namespace'>,
-    operation: 'query' | 'mutate',
-    tx: Dataset | null,
-    txEdges: EdgesStore | null,
-    parsed: ParsedKey | null,
-    onWrite?: (event: WriteEvent) => void,
-    signal?: AbortSignal,
-    afterTx?: (fn: AfterTxWork) => void,
-    txEntries?: number
-  ): Promise<boolean> {
-    const prepared = this.#prepareEntry(
-      envelope,
-      key,
-      entry,
-      ctxBase,
-      operation,
-      tx,
-      txEdges,
-      parsed,
-      onWrite,
-      signal,
-      afterTx,
-      txEntries
-    );
-    if (prepared === null) return false;
-    const { registryEntry, frame, ctx, args, decision, ns, name, isVirtual, dataset, walkScan } =
-      prepared;
-    // A throw here propagates out of the surrounding withTransaction (on
-    // mutate) and rolls back every prior frame entry — the G1 contract.
-    // Exception: `RestrictViolation` (§6.2) is a clean refusal, NOT a rollback
-    // trigger. The target row was never tombstoned; other frame entries retain
-    // their own work. We surface it in envelope.errors with a dedicated code so
-    // callers can distinguish "your delete was blocked by an edge" from a
-    // substrate failure.
-    let result: Row | Row[] | ReadResult | AsyncIterable<Row> | null;
-    const t0 = performance.now();
-    try {
-      result = await registryEntry.resolver(ctx, args);
-      if (
-        operation === 'query' &&
-        (decision.obligations?.length ?? 0) > 0 &&
-        isReadResult(result) &&
-        result.count === undefined &&
-        result.groups === undefined
-      ) {
-        result = await this.#fillFilteredPage(
-          result,
-          (cursor, limit) =>
-            registryEntry.resolver(ctx, { ...args, params: { ...args.params, cursor, limit } }),
-          (rows) => applyObligations(decision, rows, ctx),
-          args.params?.limit
-        );
-      }
-    } catch (err) {
-      if (isRestrictViolation(err)) {
-        addError(envelope, [key], err.message, 'restrict_violation');
-        this.#metric('engine_restrict_violation', {
-          key,
-          blockedBy: err.blockedBy.length
-        });
-        return false;
-      }
-      if (isResolverFrameError(err)) {
-        // Caller-chosen envelope error code (spec: ResolverFrameError). Keeps
-        // non-authz refusals (e.g. value-dependent schema constraints) out of
-        // the generic `resolver_error` bucket so clients can branch on `code`;
-        // `details` is projected verbatim.
-        addError(envelope, [key], err.message, err.code, err.details);
-        this.#metric('engine_resolver_frame_error', { key, code: err.code });
-        return true;
-      }
-      throw err;
-    } finally {
-      // After natural order is injected, so the shape carries the effective
-      // order; a read that throws (a timeout, a cancel) is recorded too, up to
-      // the throw. A single-row `id` read is served by the key, so no index
-      // could speed it.
-      if (
-        operation === 'query' &&
-        registryEntry.kind === 'type' &&
-        !isVirtual &&
-        args.params?.id === undefined
-      ) {
-        const ms = performance.now() - t0;
-        this.#shapeRecorder?.observe(
-          readShapeOf(ns, name, registryEntry.fields, args.params?.where, args.params?.orderBy),
-          ms
-        );
-        // Each walk is charged the whole read's time: the far reads run inside it.
-        if (walkScan !== undefined && this.#shapeRecorder !== undefined) {
-          for (const s of walkShapesOf(walkScan.sites, walkScan.fieldsOf)) {
-            this.#shapeRecorder.observe(s, ms);
-          }
-        }
-      }
-    }
-
-    if (walkScan !== undefined && dataset !== undefined) {
-      const plan = await this.#walkPlan(dataset, key, frame, ns, name, walkScan);
-      if (plan !== undefined) {
-        envelope._diagnostics ??= {};
-        envelope._diagnostics[key] = { ...(envelope._diagnostics[key] ?? {}), plan };
-      }
-    }
-
-    shapeResult({
-      envelope,
-      key,
-      entry: frame,
-      ctx,
-      decision,
-      result,
-      metric: this.#metric,
-      resolverFiltered: resolverFiltered(registryEntry)
-    });
-    return false;
-  }
-
-  /**
-   * Run `fn` in one transaction over `dataset`'s rows and the edges. A dataset
-   * with `withScopedTransaction` and an enlisted edges store shares one
-   * substrate tx (one pg connection); otherwise the edges tx nests inside the
-   * dataset tx.
-   */
-  async #withRowsAndEdgesTx(
-    dataset: Dataset,
-    ns: string | undefined,
-    fn: (txDs: Dataset, txEdges: EdgesStore) => Promise<void>
-  ): Promise<void> {
-    if (dataset.withScopedTransaction !== undefined && ns !== undefined) {
-      await dataset.withScopedTransaction([ns], async ({ datasets, edges }) => {
-        const txDs = datasets.get(ns) ?? dataset;
-        if (edges !== null) await fn(txDs, edges);
-        else await this.#edges.withTransaction((txEdges) => fn(txDs, txEdges));
-      });
-      return;
-    }
-    await dataset.withTransaction(async (txDs) => {
-      await this.#edges.withTransaction((txEdges) => fn(txDs, txEdges));
-    });
-  }
-
-  /**
-   * Dispatch a batched (array-valued) mutate op-key. §5.13.
-   *
-   * Contract:
-   *   - All frames under `key` run serially inside ONE isolated transaction.
-   *     A throw in frame[i] rolls back every frame[<=i] in this array; the
-   *     array commits or rolls back as a unit (all-or-nothing per op-key).
-   *   - Cross-op-key atomicity is NOT a goal for the batched path — this
-   *     array's tx is INDEPENDENT of every other op-key's tx (the single-
-   *     frame G1 bucket and every other batched array each commit
-   *     separately). Callers that need cross-op-key atomicity must stick to
-   *     the non-batched dispatch shape where G1 still applies.
-   *   - Per-frame idempotency dedup (§5.13): each frame's `idempotencyKey`
-   *     is keyed independently on `(qualifiedKey, index, idempotencyKey)`.
-   *     A cached slot is reused verbatim (resolver NOT invoked); a miss
-   *     runs the resolver inside the shared tx and caches the per-frame
-   *     slot after the whole array commits.
-   *   - Envelope shape: `envelope.data[key]` becomes `Array<unknown>` with
-   *     one element per frame (the value `#runEntry` would have written
-   *     under `key` for a single dispatch). `envelope.shapes[key]` becomes
-   *     `Array<'single' | 'list'>` with the per-frame shape at each index
-   *     (or omitted when a frame surfaced only errors — the transport
-   *     decoder keys off that).
-   *   - Per-frame errors bubble up to `envelope.errors` with a path prefix
-   *     of `[key, String(index), ...]` so callers can locate the offending
-   *     slot without reparsing the array.
-   *
-   * Structural failures (unqualified key, unknown ns, bridge array routing)
-   * short-circuit with a per-key error and never open a tx. The caller
-   * pre-checks bridge routing + empty-array before invoking this method.
-   */
-  async #runArrayEntry(
-    envelope: PackEnvelope,
-    key: string,
-    parsed: ParsedKey | null,
-    frames: Array<FrameEntry>,
-    ctxBase: Omit<RequestContext, 'namespace'>,
-    onWrite: (event: WriteEvent) => void,
-    signal?: AbortSignal
-  ): Promise<void> {
-    if (!parsed) {
-      addError(envelope, [key], this.#unqualifiedMessage(key), 'unqualified_key');
-      this.#metric('engine_unqualified_key', key);
-      return;
-    }
-    const { ns } = parsed;
-
-    // Array form is mutate-only by construction — `#runArrayEntry` is reached
-    // solely from the mutate path.
-    const nsGate = checkIdentityGrant(ctxBase.identity, ns, 'mutate');
-    if (!nsGate.ok) {
-      addError(envelope, [key], grantRefusal(ns, nsGate), grantRefusalCode(nsGate));
-      this.#metric('engine_unauthorized_namespace', { key, ns, reason: nsGate.reason });
-      return;
-    }
-
-    if (this.#tombstoned.has(ns)) {
-      addError(envelope, [key], `namespace '${ns}' was deleted`, 'namespace_tombstoned');
-      this.#metric('engine_namespace_tombstoned_reject', { key, ns });
-      return;
-    }
-
-    const nsCfg = this.#namespaces.get(ns);
-    if (!nsCfg) {
-      addError(envelope, [key], `unknown namespace '${ns}'`, 'unknown_namespace');
-      this.#metric('engine_unknown_namespace', ns);
-      return;
-    }
-
-    // Batched arrays promise per-op-key atomicity inside one dataset tx.
-    // Virtual namespaces own no storage and cannot honour that contract — refuse
-    // honestly rather than dispatching or emitting a misleading unknown_namespace.
-    if (nsCfg.virtual === true) {
-      addError(
-        envelope,
-        [key],
-        `batched frame arrays are not supported on virtual namespace '${ns}' — virtual mutations are non-transactional; send single frames`,
-        'batched_virtual_unsupported'
-      );
-      this.#metric('engine_batched_virtual_unsupported', { key, ns });
-      return;
-    }
-
-    const dataset = this.#datasets.get(ns);
-    if (!dataset) {
-      addError(envelope, [key], `unknown namespace '${ns}'`, 'unknown_namespace');
-      this.#metric('engine_unknown_namespace', ns);
-      return;
-    }
-
-    // Per-frame idempotency pre-check. A cache HIT fills its slot with the
-    // cached mini-envelope verbatim and skips the resolver at that index.
-    // A cache MISS records the dedupKey so we can `.put()` after the whole
-    // array commits.
-    // Fan out the pre-flight idempotency `.get()` lookups in one await; `get`
-    // is read-only and per-key isolated, so ordering doesn't matter.
-    const slots: ArraySlot[] = new Array(frames.length);
-    const dedupKeys: Array<string | undefined> = new Array(frames.length);
-    // Caller-scope each per-slot dedup key so a batched replay
-    // by a different requester re-dispatches instead of returning the first
-    // caller's cached slot. Reused for the post-commit `.put()` below.
-    const callerKey = callerDedupComponent(ctxBase.identity);
-    for (let i = 0; i < frames.length; i++) {
-      const frame = frames[i] as FrameEntry;
-      const idempotencyKey = frame.idempotencyKey;
-      if (idempotencyKey !== undefined && this.#idempotency !== undefined) {
-        dedupKeys[i] = makeArrayDedupKey(key, i, idempotencyKey, callerKey);
-      }
-    }
-    const cacheHits = await Promise.all(
-      dedupKeys.map((dedupKey) =>
-        dedupKey === undefined || this.#idempotency === undefined
-          ? Promise.resolve(undefined)
-          : this.#idempotency.store.get(dedupKey)
-      )
-    );
-    for (let i = 0; i < frames.length; i++) {
-      const dedupKey = dedupKeys[i];
-      const cached = cacheHits[i];
-      if (dedupKey !== undefined && cached !== undefined) {
-        this.#metric('engine_idempotency_hit', { dedupKey });
-        const cachedShape = cached.shapes[key];
-        const slot: ArraySlot = { cached: true, data: cached.data[key] };
-        if (cachedShape === 'single' || cachedShape === 'list') slot.shape = cachedShape;
-        if (cached.errors !== undefined) slot.errors = cached.errors;
-        slots[i] = slot;
-      } else if (dedupKey !== undefined) {
-        slots[i] = { cached: false, dedupKey };
-      } else {
-        slots[i] = { cached: false };
-      }
-    }
-
-    // Write-event capture is per-array so a rolled-back array never emits
-    // pushes. The outer call merges these into the parent writeBatch after
-    // this call returns successfully.
-    let arrayWriteBatch: WriteEvent[] = [];
-    const arrayOnWrite = (event: WriteEvent): void => {
-      arrayWriteBatch.push(event);
-    };
-
-    // Scratch envelope per frame: #runEntry writes data/shape/errors keyed
-    // by the qualified key. Collecting them one-at-a-time lets us assemble
-    // the Array<slot> at the end.
-    let scratchResults: SlotResult[] = new Array(frames.length);
-    // A batch resolver takes the uncached elements in one call (Task 4).
-    const batch = nsCfg.registry.get(parsed.name)?.batch;
-
-    /** One attempt in its own transaction: `batch` once, or the per-element loop. */
-    const attempt = async (
-      useBatch: boolean
-    ): Promise<{ frameError: Error | undefined; failedIndex: number | undefined }> => {
-      let failedIndex: number | undefined;
-      let frameError: Error | undefined;
-      const settled: AfterTxWork[] = [];
-      try {
-        await this.#withRowsAndEdgesTx(dataset, ns, async (txDs, txEdges) => {
-          if (useBatch && batch !== undefined) {
-            await this.#runBatch(
-              batch,
-              key,
-              parsed,
-              frames,
-              slots,
-              scratchResults,
-              ctxBase,
-              txDs,
-              txEdges,
-              arrayOnWrite,
-              signal,
-              (fn) => settled.push(fn),
-              envelope.schemaVersion
-            );
-            return;
-          }
-          for (let i = 0; i < frames.length; i++) {
-            const slot = slots[i] as ArraySlot;
-            if (slot.cached) {
-              scratchResults[i] = cachedSlotResult(slot);
-              continue;
-            }
-            const frame = frames[i] as FrameEntry;
-            const scratch: PackEnvelope = {
-              schemaVersion: envelope.schemaVersion,
-              data: {},
-              shapes: {}
-            };
-            failedIndex = i;
-            await this.#runEntry(
-              scratch,
-              key,
-              frame,
-              ctxBase,
-              'mutate',
-              txDs,
-              txEdges,
-              parsed,
-              arrayOnWrite,
-              signal,
-              (fn) => settled.push(fn),
-              frames.length
-            );
-            failedIndex = undefined;
-            const entry = slotResultOf(scratch, key);
-            scratchResults[i] = entry;
-            if (entry.errors !== undefined) {
-              // An array under one op-key is ONE transaction: a frame that
-              // refused via the envelope must unwind it just like one that
-              // threw, or the frames before it commit.
-              failedIndex = i;
-              throw new BatchedFrameRefusal(entry.errors);
-            }
-          }
-        });
-      } catch (err) {
-        let thrown: unknown = err;
-        // #runBatch names the refusing slot this way; a per-element resolver never does.
-        if (useBatch && isBatchElementError(err)) {
-          failedIndex = err.index;
-          thrown = err.cause;
-        }
-        frameError = thrown instanceof Error ? thrown : new Error(String(thrown));
-      }
-      await this.#runSettled(settled, frameError === undefined);
-      return { frameError, failedIndex };
-    };
-
-    let { frameError, failedIndex } = await attempt(batch !== undefined);
-    if (frameError instanceof BatchRefusalWithoutIndex) {
-      // The first attempt rolled back and its settled work ran uncommitted.
-      // Its one failed observation stands, since that call really failed; the
-      // re-run reports per element. At most one re-run: the loop never calls `batch`.
-      arrayWriteBatch = [];
-      scratchResults = new Array(frames.length);
-      ({ frameError, failedIndex } = await attempt(false));
-    }
-
-    if (frameError !== undefined) {
-      // Whole-array rollback. `failedIndex` (set just before each `#runEntry`)
-      // names the failing frame in the error path and the metric.
-      const atSuffix = failedIndex !== undefined ? ` at frame[${failedIndex}]` : '';
-      // Replay the refusing frame's own errors first, codes intact — a caller
-      // branching on `not_found` must still find it after the rollback.
-      if (frameError instanceof BatchedFrameRefusal) {
-        for (const e of frameError.frameErrors) {
-          addError(envelope, e.path ?? [key], e.message, e.code);
-        }
-      }
-      addError(
-        envelope,
-        failedIndex !== undefined ? [key, String(failedIndex)] : [key],
-        `batched mutate at '${key}'${atSuffix} rolled back: ${frameError instanceof BatchedFrameRefusal ? frameError.message : 'internal error'}`,
-        'batched_frame_rolled_back'
-      );
-      this.#metric('engine_batched_frame_rolled_back', {
-        key,
-        frames: frames.length,
-        ...(failedIndex !== undefined ? { failedIndex } : {}),
-        message: frameError.message
-      });
-      return;
-    }
-
-    // Commit path — assemble the per-frame data/shape arrays and bubble the
-    // per-frame errors with path = [key, index, ...].
-    const dataArr: unknown[] = [];
-    const shapeArr: Array<'single' | 'list'> = [];
-    for (let i = 0; i < frames.length; i++) {
-      const result = scratchResults[i];
-      if (result === undefined) {
-        dataArr.push(undefined);
-        continue;
-      }
-      dataArr.push('data' in result ? result.data : undefined);
-      // Fill sentinel 'single' when a slot errored without writing a shape.
-      // Per-frame errors produce undefined data + no shape; decoder tolerates
-      // the combo (null data + single-shape → decodes to null). Keeps the
-      // `Array<'single' | 'list'>` type annotation honest — no sparse holes.
-      shapeArr[i] = result.shape ?? 'single';
-      if (result.errors !== undefined) {
-        for (const e of result.errors) {
-          const prefix: string[] = [key, String(i)];
-          const extended = e.path !== undefined ? [...prefix, ...e.path.slice(1)] : prefix;
-          addError(envelope, extended, e.message, e.code);
-        }
-      }
-    }
-    envelope.data[key] = dataArr;
-    envelope.shapes[key] = shapeArr;
-
-    // Post-commit: cache per-frame slots whose frame carried an
-    // idempotencyKey + succeeded cleanly. Errors in that slot skip the cache
-    // (mirrors the frame-level "errors → no cache" rule). The array's
-    // events reach the parent batch below. The puts run in parallel; the store is per-key isolated.
-    if (this.#idempotency !== undefined) {
-      const puts: Array<Promise<void>> = [];
-      for (let i = 0; i < frames.length; i++) {
-        const slot = slots[i] as ArraySlot;
-        if (slot.cached) continue;
-        if (slot.dedupKey === undefined) continue;
-        const result = scratchResults[i];
-        if (result === undefined) continue;
-        if (result.errors !== undefined && result.errors.length > 0) continue;
-        const miniEnvelope: PackEnvelope = {
-          schemaVersion: envelope.schemaVersion,
-          data: { [key]: 'data' in result ? result.data : undefined },
-          shapes: { [key]: result.shape ?? 'single' }
-        };
-        const dedupKey = slot.dedupKey;
-        // The array has committed: a failed put must not fail the call.
-        puts.push(
-          this.#idempotency.store.put(dedupKey, miniEnvelope, this.#idempotency.defaultTtlMs).then(
-            () => {
-              this.#metric('engine_idempotency_put', { dedupKey });
-            },
-            (err: unknown) => {
-              this.#metric('engine_idempotency_put_failed', {
-                dedupKey,
-                error: err instanceof Error ? err.message : String(err)
-              });
-            }
-          )
-        );
-      }
-      await Promise.all(puts);
-    }
-
-    // Hand the committed array's events to the parent batch; the mutate pushes
-    // them as soon as this array returns.
-    for (const event of arrayWriteBatch) {
-      onWrite(event);
-    }
-  }
-
-  /**
-   * The batch branch of `#runArrayEntry`, inside its transaction. Prepares
-   * every uncached element as `#runEntryInner` would, calls `batch` once with
-   * their args in slot order, then shapes each result under its own frame and
-   * decision. A refusal at slot `i` throws `BatchElementError(i, …)` with a
-   * `BatchedFrameRefusal` carrying the element's own errors, or the raw cause
-   * when it is not a frame refusal; `#runArrayEntry` unwraps it into today's
-   * rollback envelope. Cached slots are filled and skipped; when every slot is
-   * cached, `batch` is not called.
-   */
-  async #runBatch(
-    batch: BatchResolver,
-    key: string,
-    parsed: ParsedKey,
-    frames: Array<FrameEntry>,
-    slots: readonly ArraySlot[],
-    results: SlotResult[],
-    ctxBase: Omit<RequestContext, 'namespace'>,
-    txDs: Dataset,
-    txEdges: EdgesStore,
-    onWrite: (event: WriteEvent) => void,
-    signal: AbortSignal | undefined,
-    afterTx: (fn: AfterTxWork) => void,
-    schemaVersion: string
-  ): Promise<void> {
-    const hook = this.#onResolve;
-    const callerId = ctxBase.identity?.id;
-    const t0 = performance.now();
-    // Set once the batch is called; until then an observation is per element.
-    let batchSize = 0;
-    const report = (
-      ok: boolean,
-      durationMs: number,
-      batchIndex: number | undefined,
-      err?: { code?: string; message: string }
-    ) => {
-      if (hook === undefined) return;
-      observe(hook, {
-        key,
-        kind: 'mutate',
-        durationMs,
-        ok,
-        ...(batchIndex !== undefined ? { batchSize, batchIndex } : {}),
-        ...(callerId !== undefined ? { caller: callerId } : {}),
-        ...(err?.code !== undefined ? { code: err.code } : {}),
-        ...(err !== undefined ? { message: err.message } : {})
-      });
-    };
-
-    const at: number[] = [];
-    const prepared: PreparedEntry[] = [];
-    for (let i = 0; i < frames.length; i++) {
-      const slot = slots[i] as ArraySlot;
-      if (slot.cached) {
-        results[i] = cachedSlotResult(slot);
-        continue;
-      }
-      const scratch: PackEnvelope = { schemaVersion, data: {}, shapes: {} };
-      let p: PreparedEntry | null;
-      try {
-        p = this.#prepareEntry(
-          scratch,
-          key,
-          frames[i] as FrameEntry,
-          ctxBase,
-          'mutate',
-          txDs,
-          txEdges,
-          parsed,
-          onWrite,
-          signal,
-          afterTx,
-          frames.length
-        );
-      } catch (err) {
-        report(false, performance.now() - t0, undefined, {
-          code: 'exception',
-          message: err instanceof Error ? err.message : String(err)
-        });
-        throw new BatchElementError(i, err);
-      }
-      if (p === null) {
-        const refused = slotResultOf(scratch, key);
-        results[i] = refused;
-        const errors = refused.errors ?? [];
-        report(false, performance.now() - t0, undefined, errors[0]);
-        throw new BatchElementError(i, new BatchedFrameRefusal(errors));
-      }
-      at.push(i);
-      prepared.push(p);
-    }
-    if (prepared.length === 0) return;
-
-    // Every observation of one batch carries the batch call's real time and
-    // its size, so a consumer can tell an amortised call from a single one.
-    const n = prepared.length;
-    batchSize = n;
-    const tb = performance.now();
-    let rows: Array<Row | null>;
-    try {
-      rows = await batch(
-        (prepared[0] as PreparedEntry).ctx,
-        prepared.map((p) => p.args)
-      );
-    } catch (err) {
-      const ms = performance.now() - tb;
-      const slot = isBatchElementError(err) ? at[err.index] : undefined;
-      if (!isBatchElementError(err) && (isResolverFrameError(err) || isRestrictViolation(err))) {
-        // A refusal that names no element: #runArrayEntry re-runs the array per element.
-        report(false, ms, 0, {
-          code: isRestrictViolation(err) ? 'restrict_violation' : err.code,
-          message: err.message
-        });
-        throw new BatchRefusalWithoutIndex(err);
-      }
-      if (!isBatchElementError(err) || slot === undefined) {
-        // Not attributable to one element: one observation for the batch,
-        // reported as today's "internal error" at [key]. An out-of-range index
-        // is one too, and must not be read back as a slot by the caller.
-        const cause = isBatchElementError(err)
-          ? new Error(`batch resolver for '${key}' refused element ${err.index} of ${n}`)
-          : err;
-        report(false, ms, 0, {
-          code: 'exception',
-          message: cause instanceof Error ? cause.message : String(cause)
-        });
-        throw cause;
-      }
-      const cause = err.cause;
-      const refusal = this.#batchFrameRefusal(key, cause);
-      // As the per-element loop reports: the elements before it resolved, then it refused.
-      for (let j = 0; j < err.index; j++) report(true, ms, j);
-      report(false, ms, err.index, {
-        code: refusal?.frameErrors[0]?.code ?? 'exception',
-        message: cause instanceof Error ? cause.message : String(cause)
-      });
-      throw new BatchElementError(slot, refusal ?? cause);
-    }
-    const ms = performance.now() - tb;
-    if (!Array.isArray(rows) || rows.length !== n) {
-      const wrong = new Error(
-        `batch resolver for '${key}' returned ${Array.isArray(rows) ? rows.length : typeof rows} results for ${n} elements`
-      );
-      report(false, ms, 0, { code: 'exception', message: wrong.message });
-      throw wrong;
-    }
-
-    for (let j = 0; j < n; j++) {
-      const p = prepared[j] as PreparedEntry;
-      const i = at[j] as number;
-      const scratch: PackEnvelope = { schemaVersion, data: {}, shapes: {} };
-      shapeResult({
-        envelope: scratch,
-        key,
-        entry: p.frame,
-        ctx: p.ctx,
-        decision: p.decision,
-        result: rows[j] ?? null,
-        metric: this.#metric,
-        resolverFiltered: resolverFiltered(p.registryEntry)
-      });
-      const shaped = slotResultOf(scratch, key);
-      results[i] = shaped;
-      if (shaped.errors !== undefined) {
-        report(false, ms, j, shaped.errors[0]);
-        throw new BatchElementError(i, new BatchedFrameRefusal(shaped.errors));
-      }
-      report(true, ms, j);
-    }
-  }
-
-  /**
-   * A batch's `ResolverFrameError` or `RestrictViolation` as the per-element
-   * resolver catch records it: its own code at `[key]`, with the same metric.
-   * Undefined for any other error.
-   */
-  #batchFrameRefusal(key: string, cause: unknown): BatchedFrameRefusal | undefined {
-    if (isRestrictViolation(cause)) {
-      this.#metric('engine_restrict_violation', { key, blockedBy: cause.blockedBy.length });
-      return new BatchedFrameRefusal([
-        { message: cause.message, path: [key], code: 'restrict_violation' }
-      ]);
-    }
-    if (isResolverFrameError(cause)) {
-      this.#metric('engine_resolver_frame_error', { key, code: cause.code });
-      return new BatchedFrameRefusal([{ message: cause.message, path: [key], code: cause.code }]);
-    }
-    return undefined;
   }
 
   /**
@@ -3189,45 +806,4 @@ export class Engine implements ActHandle {
   stream(input: StreamInput): StreamHandle {
     return this.#stream.stream(input);
   }
-}
-
-/** `fields` with every nested `{ _walk }` selection lacking a `limit` given `limit`, at any depth. */
-function withNestedDefaultLimits<T>(fields: T, limit: number): T {
-  if (typeof fields !== 'object' || fields === null || Array.isArray(fields)) return fields;
-  return Object.fromEntries(
-    Object.entries(fields).map(([name, sel]) => {
-      // `_agg` specs are not selections: their `where` may hold a `_walk`.
-      if (name === '_agg' || typeof sel !== 'object' || sel === null || Array.isArray(sel)) {
-        return [name, sel];
-      }
-      const s = sel as Record<string, unknown>;
-      if (!Object.hasOwn(s, '_walk')) return [name, withNestedDefaultLimits(s, limit)];
-      return [
-        name,
-        {
-          ...s,
-          ...(Object.hasOwn(s, 'fields')
-            ? { fields: withNestedDefaultLimits(s.fields, limit) }
-            : {}),
-          ...(s.limit === undefined || s.limit === null ? { limit } : {})
-        }
-      ];
-    })
-  ) as T;
-}
-
-/** Path to the first nested `{ _walk }` selection whose numeric `limit` exceeds `max`, at any depth. */
-function nestedOverLimit(fields: unknown, path: string[], max: number): string[] | null {
-  if (typeof fields !== 'object' || fields === null) return null;
-  for (const [name, sel] of Object.entries(fields)) {
-    if (name === '_agg' || typeof sel !== 'object' || sel === null) continue;
-    const s = sel as Record<string, unknown>;
-    const walk = Object.hasOwn(s, '_walk');
-    if (walk && typeof s.limit === 'number' && s.limit > max) return [...path, name, 'limit'];
-    const deeper = walk
-      ? nestedOverLimit(s.fields, [...path, name, 'fields'], max)
-      : nestedOverLimit(s, [...path, name], max);
-    if (deeper !== null) return deeper;
-  }
-  return null;
 }

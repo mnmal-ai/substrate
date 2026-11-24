@@ -576,7 +576,7 @@ export class SubscribeSubsystem {
       return null;
     }
 
-    // Thread entry/verb, as engine.#runEntry does.
+    // Thread entry/verb, as engine.runEntry does.
     const ctx: RequestContext = {
       ...ctxBase,
       namespace: ns,
