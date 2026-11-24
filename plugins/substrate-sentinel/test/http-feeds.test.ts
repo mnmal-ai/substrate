@@ -90,7 +90,7 @@ async function flush(): Promise<void> {
 
 async function listCoordinators(
   server: MemorySubstrateServer
-): Promise<Array<{ name: string; status: string }>> {
+): Promise<Array<{ id: string; name: string; status: string }>> {
   const res = await server.inject({
     method: 'POST',
     path: '/substrate/v1/query',
@@ -105,7 +105,11 @@ async function listCoordinators(
     )
   });
   const env = jsonBody<PackEnvelope>(res);
-  return (env.data[`${NS}/Coordinator`] ?? []) as Array<{ name: string; status: string }>;
+  return (env.data[`${NS}/Coordinator`] ?? []) as Array<{
+    id: string;
+    name: string;
+    status: string;
+  }>;
 }
 
 async function listCoordinatorNamespaces(server: MemorySubstrateServer): Promise<string[]> {
@@ -310,6 +314,43 @@ describe('sentinel register', () => {
     );
     expect(res.status).toBe(409);
     expect(jsonBody<{ error: string }>(res).error).toMatch(/another identity/);
+  });
+
+  it('refuses a direct write to a coordinator row from anyone but an admin', async () => {
+    h = await setup();
+    await registerReply(await register(h.server, HOME));
+    const [row] = await listCoordinators(h.server);
+    const mutate = async (key: string, params: Record<string, unknown>, headers: object) => {
+      const res = await h?.server.inject({
+        method: 'POST',
+        path: '/substrate/v1/mutate',
+        headers: { 'content-type': 'application/json', ...headers },
+        body: Buffer.from(JSON.stringify({ [`${NS}/${key}`]: { params, fields: { id: true } } }))
+      });
+      return jsonBody<PackEnvelope>(res as SubstrateResponse).errors?.map((e) => e.code) ?? [];
+    };
+
+    for (const headers of [as('someone-else'), authHeaders()]) {
+      expect(await mutate('deleteCoordinator', { id: row?.id }, headers)).toEqual([
+        'policy_denied'
+      ]);
+      expect(
+        await mutate('updateCoordinator', { id: row?.id, url: 'http://evil.test' }, headers)
+      ).toEqual(['policy_denied']);
+      expect(
+        await mutate('deleteManyCoordinator', { where: { name: { eq: 'home' } } }, headers)
+      ).toEqual(['policy_denied']);
+      expect(
+        await mutate('createCoordinatorBridge', { coordinatorId: row?.id, name: 'x' }, headers)
+      ).toEqual(['policy_denied']);
+    }
+    expect(await listCoordinators(h.server)).toEqual([
+      expect.objectContaining({ name: 'home', status: 'online' })
+    ]);
+
+    const admin = as('operator', ['read', 'mutate', 'admin']);
+    expect(await mutate('deleteCoordinator', { id: row?.id }, admin)).toEqual([]);
+    expect(await listCoordinators(h.server)).toEqual([]);
   });
 
   it("refuses (409) a new name advertising another identity's url", async () => {

@@ -28,6 +28,7 @@ interface FederatedSchemaShape {
 
 async function setup(): Promise<{
   server: MemorySubstrateServer;
+  sentinelDataset: MemoryDataset;
   stop: () => Promise<void>;
 }> {
   const server = new MemorySubstrateServer();
@@ -46,6 +47,7 @@ async function setup(): Promise<{
   await server.start();
   return {
     server,
+    sentinelDataset,
     stop: async (): Promise<void> => {
       await composed.stop();
     }
@@ -84,34 +86,23 @@ describe('buildSentinelNamespace', () => {
     }
   });
 
-  it('round-trips createCoordinator and reads it back via the Coordinator list', async () => {
-    const { server, stop } = await setup();
+  it('reads a stored coordinator back via the Coordinator list', async () => {
+    const { server, stop, sentinelDataset } = await setup();
     cleanup = stop;
 
-    const create = await server.inject({
-      method: 'POST',
-      path: '/substrate/v1/mutate',
-      headers: { 'content-type': 'application/json' },
-      body: Buffer.from(
-        JSON.stringify({
-          [`${NS}/createCoordinator`]: {
-            params: {
-              name: 'home',
-              url: 'http://localhost:3200',
-              namespaces: 'family,home',
-              status: 'online',
-              lastHeartbeat: '2026-04-19T00:00:00Z',
-              registeredAt: '2026-04-19T00:00:00Z',
-              version: '1.0.0'
-            },
-            fields: { id: true, name: true }
-          }
-        })
-      )
-    });
-    expect(create.status).toBe(200);
-    const createdEnv = jsonBody<PackEnvelope>(create);
-    expect(createdEnv.errors).toBeUndefined();
+    // Coordinator rows are written by the register route; seed the store directly.
+    await sentinelDataset.write('Coordinator', [
+      {
+        id: '00000000-0000-4000-8000-0000000000aa',
+        name: 'home',
+        url: 'http://localhost:3200',
+        namespaces: 'family,home',
+        status: 'online',
+        lastHeartbeat: '2026-04-19T00:00:00Z',
+        registeredAt: '2026-04-19T00:00:00Z',
+        version: '1.0.0'
+      }
+    ]);
 
     const list = await server.inject({
       method: 'POST',
