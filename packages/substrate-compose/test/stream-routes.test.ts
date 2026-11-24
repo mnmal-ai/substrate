@@ -198,7 +198,8 @@ describe('stream routes', () => {
   it('tolerates a spurious cancel arriving after the session already ended', async () => {
     // `transport.close()` leaves the stream "closing" while bytes are still
     // queued, so a later consumer `cancel()` still fires the sink's cancel and
-    // re-enters `onCancel`. The engine handle must not be cancelled twice.
+    // re-enters `onCancel`. The engine handle is released once, when the
+    // engine ends the subscribe, and must not be cancelled a second time.
     const { engine, fire, cancels } = fakeEngine();
     const server = serverWith(engine);
 
@@ -207,7 +208,7 @@ describe('stream routes', () => {
     if (!(res.body instanceof ReadableStream)) throw new Error('expected a stream');
     await res.body.cancel();
 
-    expect(cancels).toEqual([]);
+    expect(cancels).toHaveLength(1);
   });
 
   it('closes the response when EVERY subscribe key fails registration', async () => {
