@@ -18,6 +18,7 @@ import {
   resolveIdentity
 } from '@mnmal-ai/substrate/sdk';
 import type { CoordinatorConnection, LivenessRegistry, PeerConnection } from './liveness.js';
+import { REGISTER_WRITE } from './namespace.js';
 
 interface BridgeInfo {
   name: string;
@@ -97,7 +98,7 @@ async function engineMutate<T>(
   const key = formatQualifiedKey(namespace, mutationName);
   const env: PackEnvelope = await engine.mutate({
     frame: { [key]: { params, fields } },
-    ctx: makeCtx(namespace, 'mutate', identity)
+    ctx: { ...makeCtx(namespace, 'mutate', identity), meta: { [REGISTER_WRITE]: true } }
   });
   const row = env.data[key];
   if (row === undefined || row === null) return undefined;
