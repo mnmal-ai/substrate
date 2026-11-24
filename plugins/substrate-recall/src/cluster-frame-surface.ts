@@ -406,7 +406,8 @@ export function buildClusterSurface(deps: ClusterSurfaceDeps): {
     const before = await deps.clusters.getCluster(p.id);
     if (before === null) bad(`no cluster with id '${p.id}'`);
     const preVis = await resolveClusterVisibility(before, deps, ctx);
-    if (!preVis.visible) {
+    // Replacing a label needs what reading it needs: read of every member.
+    if (!preVis.visible || !preVis.labelReadable) {
       throw new ResolverFrameError('policy_denied', `read policy denies cluster '${p.id}'`);
     }
     const updated = await deps.clusters.relabel(p.id, p.label.trim());
