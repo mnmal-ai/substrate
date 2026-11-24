@@ -21,7 +21,11 @@ function bearer(ns: string[]): Record<string, string> {
   return { authorization: `Bearer ${t}` };
 }
 
-async function drop(ns: string[]) {
+async function drop(
+  ns: string[],
+  route = 'drop-namespace',
+  target: object = { namespace: 'default' }
+) {
   const server = new MemorySubstrateServer();
   const composed = await compose({
     systemActor: 'test',
@@ -32,13 +36,15 @@ async function drop(ns: string[]) {
   await server.start();
   const res = await server.inject({
     method: 'POST',
-    path: '/substrate/v1/_system/drop-namespace',
+    path: `/substrate/v1/_system/${route}`,
     headers: bearer(ns),
-    body: Buffer.from(JSON.stringify({ namespace: 'default', confirm: 'default', dryRun: true }))
+    body: Buffer.from(JSON.stringify({ confirm: 'default', dryRun: true, ...target }))
   });
   await composed.stop();
+  lastBody = String(res.body);
   return res.status;
 }
+let lastBody = '';
 
 describe('_system write routes', () => {
   it('refuse admin held only in another namespace', async () => {
@@ -47,5 +53,19 @@ describe('_system write routes', () => {
 
   it('accept admin held in the target namespace', async () => {
     expect(await drop(['default'])).not.toBe(403);
+  });
+
+  it('need store-wide admin to drop from a `_system_*` control namespace', async () => {
+    const control = '_system_proposals';
+    const type = { namespace: control, type: 'NamespaceProposal', confirm: 'NamespaceProposal' };
+    const whole = { namespace: control, confirm: control };
+    for (const [route, target] of [
+      ['drop-type', type],
+      ['drop-namespace', whole]
+    ] as const) {
+      expect(await drop([control], route, target)).toBe(403);
+      expect(JSON.parse(lastBody)).toEqual({ code: 'forbidden', required: '*:admin' });
+      expect(await drop(['*'], route, target)).not.toBe(403);
+    }
   });
 });
