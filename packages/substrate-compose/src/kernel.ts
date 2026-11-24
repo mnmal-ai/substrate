@@ -27,7 +27,7 @@ import type {
 } from '@mnmal-ai/substrate-types';
 import type { AuthConfig } from './auth.js';
 import { withAdminInBodyNamespace, withAuth } from './compose/auth-middleware.js';
-import { withRequestContext } from './routes/helpers.js';
+import { ipCapKey, withRequestContext } from './routes/helpers.js';
 
 /**
  * Mount a plugin's kernel route under `/substrate/v1/`, applying the capability gate
@@ -46,9 +46,13 @@ export function withInFlightCap(handler: HttpHandler, max: number): HttpHandler 
   const running = new Map<string, number>();
   return async (req) => {
     const id = req.identity?.id;
-    // `clientIp` is the address behind a trusted proxy, so its clients are not one caller.
+    // `clientIp` is the address behind a trusted proxy, so its clients are not one
+    // caller; `ipCapKey` counts an IPv6 /64 as one, as the registration cap does.
+    const ip = req.clientIp ?? req.peerIp;
     const caller =
-      typeof id === 'string' ? `id:${id}` : `ip:${req.clientIp ?? req.peerIp ?? 'unknown'}`;
+      typeof id === 'string'
+        ? `id:${id}`
+        : `ip:${ip === undefined || ip === '' ? 'unknown' : ipCapKey(ip)}`;
     const n = running.get(caller) ?? 0;
     if (n >= max) {
       return {

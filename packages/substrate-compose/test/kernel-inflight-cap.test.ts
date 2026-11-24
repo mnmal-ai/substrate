@@ -65,3 +65,15 @@ it('tells clients behind one trusted proxy apart by their own address', async ()
   for (const r of release) r();
   expect((await Promise.all([first, second])).map((r) => r.status)).toEqual([200, 200]);
 });
+
+it('counts one IPv6 /64 as one caller', async () => {
+  const release: Array<() => void> = [];
+  const handler = withInFlightCap(async () => {
+    await new Promise<void>((r) => release.push(r));
+    return { status: 200, headers: {}, body: Buffer.from('') };
+  }, 1);
+  const first = handler(req(undefined, '2001:db8:1:2::1'));
+  expect((await handler(req(undefined, '2001:db8:1:2::ffff'))).status).toBe(429);
+  release[0]?.();
+  expect((await first).status).toBe(200);
+});
