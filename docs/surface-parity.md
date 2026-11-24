@@ -34,7 +34,7 @@ than its behaviour.
 | recall | `POST /substrate/v1/recall` **and** `recall/Hit` through `POST /substrate/v1/query` | `recall` | refused (`subscription_unsupported_frame`), in-band as an `error` frame under HTTP 200 |
 | metrics | `GET /substrate/v1/metrics` (needs `read`): request counts, per-key `resolvers` (latency histogram, errors), `process` (rss, heap, cpu, event-loop lag, `inFlight`), `slowest`; no error text; per-key fields filtered by the caller's namespace grant (read in that namespace; anonymous callers get none) | — | — |
 | errors | `GET /substrate/v1/errors` (needs `admin`): last 50 failed resolves with truncated messages, each naming its caller (its kid, the key id it signed with, or `anonymous`) | — | — |
-| config knobs | `GET /substrate/v1/config` (needs **`admin`**, not `read`) | — | — |
+| config knobs | `GET /substrate/v1/config` (needs store-wide **`admin`**, not `read`) | — | — |
 | embed stats | `GET /substrate/v1/embed-stats` — answers about **both** retrieval arms despite the name | — | — |
 | admin: invites, drop-namespace, drop-type | `POST /substrate/v1/_system/*` | `drop_namespace`, `drop_type` | — |
 | register a key | `POST /substrate/v1/_system/register` | — | — |
@@ -79,7 +79,9 @@ document exists to record.
 **`GET /substrate/v1/config` is the one route here gated on `admin` rather than
 `read`.** The asymmetry with `/substrate/v1/metrics` is deliberate: throughput
 counters say how BUSY a deployment is, the knob report says how it is BUILT —
-store kind, auth mode, trusted-proxy list. Two further properties:
+store kind, auth mode, trusted-proxy list. The report covers every namespace, so
+`admin` must be held store-wide (under `*`); admin in one namespace gets `403`.
+Two further properties:
 
 - **It does not exist on every deployment.** The route mounts only when the
   caller passes a knob report to `compose`, which the binary does and an

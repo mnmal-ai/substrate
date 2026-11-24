@@ -26,7 +26,7 @@ import type {
   McpToolRegistration
 } from '@mnmal-ai/substrate-types';
 import type { AuthConfig } from './auth.js';
-import { withAuth } from './compose/auth-middleware.js';
+import { withAdminInBodyNamespace, withAuth } from './compose/auth-middleware.js';
 import { withRequestContext } from './routes/helpers.js';
 
 /**
@@ -45,10 +45,14 @@ export function mountKernelRoute(
 ): void {
   // `'public'` is the only way past the gate, and it has to be written down:
   // an absent capability must not read as a deliberate opt-out.
+  const inner =
+    auth !== null && claim.capability === 'admin' && claim.targetNamespace === 'body'
+      ? withAdminInBodyNamespace(claim.handler, auth.adminCapability ?? 'admin')
+      : claim.handler;
   const handler =
     claim.capability !== 'public' && auth !== null
-      ? withAuth(claim.handler, auth, claim.capability)
-      : claim.handler;
+      ? withAuth(inner, auth, claim.capability)
+      : inner;
   server.route(
     claim.method,
     `/substrate/v1/${claim.path}`,
