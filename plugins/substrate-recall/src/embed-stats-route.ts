@@ -157,11 +157,16 @@ export function embedStatsRouteHandler(
 ): HttpHandler {
   // Sync fast path, async only on the opt-in coverage scan: callers invoke it
   // synchronously and read `.body`. HttpHandler permits both shapes.
+  // The coverage scan reads every indexed row, so concurrent requests share one.
+  let scan: Promise<SubstrateResponse> | undefined;
   return (req: SubstrateRequest): SubstrateResponse | Promise<SubstrateResponse> => {
     const all = handleEmbedStatsRequest(stats, registry, lexicalRegistry, composition);
     if (readsEveryNamespace(req.identity)) {
       if (!wantsCoverage(req)) return jsonResponse(200, all);
-      return coverageResponse(all, lexicalRegistry, composition);
+      scan ??= coverageResponse(all, lexicalRegistry, composition).finally(() => {
+        scan = undefined;
+      });
+      return scan;
     }
     // The counts are store-wide, but which types exist and which row last
     // failed are facts about a namespace: a caller sees its own namespaces'.

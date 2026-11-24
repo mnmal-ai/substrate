@@ -63,6 +63,11 @@ import {
 
 export { clearExtensionOperators, getExtensionOperator, registerExtensionOperator };
 
+/** Predicates one `where` may hold, across all its branches; each costs a test per row scanned. */
+export const MAX_WHERE_PREDICATES = 256;
+/** Levels of nesting one `where` may have. */
+export const MAX_WHERE_DEPTH = 32;
+
 /** Extension-operator clauses one `where` may hold, across all its AND/OR/NOT branches. */
 const MAX_EXTENSION_OPS = 4;
 
@@ -1060,6 +1065,53 @@ export interface ValidateFilterInput extends WalkResolvers {
   fields?: Record<string, unknown>;
 }
 
+/**
+ * Refuse a `where` that nests deeper than {@link MAX_WHERE_DEPTH}, holds more
+ * than `caps.predicates` predicates, or has a list operand (an `in`) longer
+ * than `caps.listValues`. A list operand counts as one predicate.
+ */
+export function assertWhereSize(
+  where: unknown,
+  caps: { predicates: number; listValues?: number; what?: string } = {
+    predicates: MAX_WHERE_PREDICATES
+  }
+): void {
+  const what = caps.what ?? 'a where';
+  const count = (node: unknown, path: string[]): number => {
+    if (path.length > MAX_WHERE_DEPTH) {
+      throw new FilterValidationError(
+        'invalid_logical',
+        `${what} nests at most ${MAX_WHERE_DEPTH} levels deep`,
+        path
+      );
+    }
+    if (Array.isArray(node)) {
+      if (node.every((v) => typeof v !== 'object' || v === null)) {
+        if (caps.listValues !== undefined && node.length > caps.listValues) {
+          throw new FilterValidationError(
+            'invalid_logical',
+            `${what} takes at most ${caps.listValues} values in one list`,
+            path
+          );
+        }
+        return 1;
+      }
+      return node.reduce<number>((n, v, i) => n + count(v, [...path, String(i)]), 0);
+    }
+    if (typeof node === 'object' && node !== null && !(node instanceof Date)) {
+      return Object.entries(node).reduce((n, [k, v]) => n + count(v, [...path, k]), 0);
+    }
+    return 1;
+  };
+  if (count(where, ['where']) > caps.predicates) {
+    throw new FilterValidationError(
+      'invalid_logical',
+      `${what} takes at most ${caps.predicates} predicates`,
+      ['where']
+    );
+  }
+}
+
 export function validateFilter(input: ValidateFilterInput): void {
   const fields = input.typeSchema.fields;
   const seed: WalkScope = {
@@ -1086,6 +1138,7 @@ export function validateFilter(input: ValidateFilterInput): void {
   const aggs = validateSelection(input.fields, ['fields'], seed, h);
   const scope = aggs.size > 0 ? { ...seed, aggs } : seed;
   if (input.where !== undefined) {
+    assertWhereSize(input.where);
     validateWhereAgainstFields(input.where, fields, ['where'], input.capabilities, {
       walk: scope
     });
