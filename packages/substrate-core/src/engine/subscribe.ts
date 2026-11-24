@@ -32,7 +32,7 @@ import {
   WS_CODE_SUBSCRIPTION_UNSUPPORTED_FRAME,
   WS_REASON_SUBSCRIPTION_OVERLOADED
 } from '@mnmal-ai/substrate-types';
-import { FilterValidationError, validateFilter } from '../filter/validator.js';
+import { assertWhereSize, FilterValidationError, validateFilter } from '../filter/validator.js';
 import { applyObligations, evaluatePolicy } from '../policy-evaluator.js';
 import {
   checkIdentityGrant,
@@ -84,36 +84,6 @@ export const MAX_SUBSCRIBE_PREDICATES = 64;
 export const MAX_SUBSCRIBE_LIST_VALUES = 1000;
 /** Most open subscriptions on one type, across all callers. */
 export const MAX_SUBSCRIPTIONS_PER_TYPE = 1024;
-
-/** Refuse a subscription `where` whose predicates or list operands exceed the caps. */
-export function assertSubscribeWhereSize(where: unknown): void {
-  const count = (node: unknown, path: string[]): number => {
-    if (Array.isArray(node)) {
-      if (node.every((v) => typeof v !== 'object' || v === null)) {
-        if (node.length > MAX_SUBSCRIBE_LIST_VALUES) {
-          throw new FilterValidationError(
-            'invalid_logical',
-            `a subscription where takes at most ${MAX_SUBSCRIBE_LIST_VALUES} values in one list`,
-            path
-          );
-        }
-        return 1;
-      }
-      return node.reduce<number>((n, v, i) => n + count(v, [...path, String(i)]), 0);
-    }
-    if (typeof node === 'object' && node !== null && !(node instanceof Date)) {
-      return Object.entries(node).reduce((n, [k, v]) => n + count(v, [...path, k]), 0);
-    }
-    return 1;
-  };
-  if (count(where, ['where']) > MAX_SUBSCRIBE_PREDICATES) {
-    throw new FilterValidationError(
-      'invalid_logical',
-      `a subscription where takes at most ${MAX_SUBSCRIBE_PREDICATES} predicates`,
-      ['where']
-    );
-  }
-}
 
 /** Params a live read (subscribe, or stream on a type) accepts; anything else is `unknown_param`. */
 export const KNOWN_SUBSCRIBE_PARAMS: ReadonlySet<string> = new Set(['where', 'orderBy']);
@@ -700,7 +670,13 @@ export class SubscribeSubsystem {
       const schema = this.#schemaFor(ns);
       const typeSchema = schema.types[name];
       try {
-        if (where !== undefined) assertSubscribeWhereSize(where);
+        if (where !== undefined) {
+          assertWhereSize(where, {
+            predicates: MAX_SUBSCRIBE_PREDICATES,
+            listValues: MAX_SUBSCRIBE_LIST_VALUES,
+            what: 'a subscription where'
+          });
+        }
         if (typeSchema) {
           validateFilter({
             ...(where !== undefined ? { where } : {}),

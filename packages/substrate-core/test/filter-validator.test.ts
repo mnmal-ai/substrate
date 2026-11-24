@@ -4,7 +4,12 @@
 
 import type { FilterCapabilities, TypeSchema } from '@mnmal-ai/substrate-types';
 import { describe, expect, it } from 'vitest';
-import { FilterValidationError, validateFilter } from '../src/filter/validator.js';
+import {
+  FilterValidationError,
+  MAX_WHERE_DEPTH,
+  MAX_WHERE_PREDICATES,
+  validateFilter
+} from '../src/filter/validator.js';
 
 const SCHEMA: TypeSchema = {
   fields: {
@@ -782,5 +787,29 @@ describe('validateFilter — list fields (has)', () => {
         }),
       'capability_unsupported'
     );
+  });
+});
+
+describe('where size', () => {
+  const run = (where: unknown) => () =>
+    validateFilter({ where: where as never, typeSchema: SCHEMA, capabilities: CAPS });
+  const or = (n: number) => ({
+    OR: Array.from({ length: n }, (_, i) => ({ title: { eq: `t${i}` } }))
+  });
+  const nested = (depth: number): unknown =>
+    depth === 0 ? { title: { eq: 'a' } } : { AND: [nested(depth - 1)] };
+
+  it('admits a where at the predicate cap and refuses one past it', () => {
+    expectOk(run(or(MAX_WHERE_PREDICATES)));
+    expectCode(run(or(MAX_WHERE_PREDICATES + 1)), 'invalid_logical');
+  });
+
+  it('counts a list operand as one predicate', () => {
+    expectOk(run({ title: { in: Array.from({ length: 5000 }, (_, i) => `t${i}`) } }));
+  });
+
+  it('refuses a where nested past the depth cap', () => {
+    expectOk(run(nested(4)));
+    expectCode(run(nested(MAX_WHERE_DEPTH)), 'invalid_logical');
   });
 });

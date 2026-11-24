@@ -53,6 +53,15 @@ describe('embedStatsRouteHandler', () => {
     body: null
   };
 
+  it('shares one coverage scan between concurrent requests and starts a new one afterwards', async () => {
+    const handler = embedStatsRouteHandler(undefined);
+    const req = { ...fakeReq, query: { coverage: 'true' } };
+    const first = handler(req);
+    expect(handler(req)).toBe(first);
+    await first;
+    expect(handler(req)).not.toBe(first);
+  });
+
   it('returns status 200 with JSON content-type', async () => {
     const handler = embedStatsRouteHandler(undefined);
     const res = await Promise.resolve(handler(fakeReq));
