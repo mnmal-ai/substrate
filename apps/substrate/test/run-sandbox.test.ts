@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import type { SubstrateClient } from '@mnmal-ai/substrate-client';
 import type { PackEnvelope } from '@mnmal-ai/substrate-types';
 import { describe, expect, it } from 'vitest';
-import { runSandboxed } from '../src/mcp/run-sandbox.js';
+import { osJail, runSandboxed } from '../src/mcp/run-sandbox.js';
 
 function fakeClient(): { client: SubstrateClient; mutated: unknown[] } {
   const mutated: unknown[] = [];
@@ -190,6 +190,27 @@ describe('runSandboxed', () => {
       result: Array(8).fill('a script cannot signal a process')
     });
   });
+
+  it.runIf(osJail() !== null)(
+    'starts the script in namespaces of its own where bubblewrap is available',
+    async () => {
+      const r = await run(
+        `export default async (s) => {
+          const os = await import('node:os');
+          let reach;
+          try { process.kill(s.args.pid, 0); reach = 'reached'; } catch (e) { reach = e.message; }
+          return { pid: process.pid, ppid: process.ppid, nics: Object.keys(os.networkInterfaces()), reach };
+        };`,
+        { args: { pid: process.pid } }
+      );
+      // A handful of processes exist in the namespace, and no network device beyond loopback.
+      expect(r).toMatchObject({ ok: true });
+      const seen = r.result as { pid: number; ppid: number; nics: string[] };
+      expect(seen.pid).toBeLessThan(10);
+      expect(seen.ppid).toBeLessThan(10);
+      expect(seen.nics.filter((n) => n !== 'lo')).toEqual([]);
+    }
+  );
 
   it('kills a script that runs past the timeout', async () => {
     const t0 = performance.now();
