@@ -83,8 +83,63 @@ function withEmbedTimeout(embedder: Embedder, timeoutMs: number): Embedder {
   };
 }
 
+/**
+ * `embedder` running at most `running` embeds at once, with at most `waiting`
+ * more held in arrival order. An embed past both fails at once.
+ */
+export function withEmbedLimit(embedder: Embedder, running: number, waiting: number): Embedder {
+  let active = 0;
+  const queue: Array<() => void> = [];
+  return {
+    modelId: embedder.modelId,
+    dimension: embedder.dimension,
+    embed: async (text, opts) => {
+      if (active >= running) {
+        if (queue.length >= waiting) {
+          throw new Error(
+            `embedder busy: ${running} embeds running and ${waiting} waiting; retry shortly`
+          );
+        }
+        // The finishing embed hands its slot over, so `active` stays as it is.
+        // A wait is cut off at the call's timeout, which the embed would have had.
+        await new Promise<void>((go, fail) => {
+          const timer =
+            opts?.timeoutMs === undefined
+              ? undefined
+              : setTimeout(() => {
+                  queue.splice(queue.indexOf(enter), 1);
+                  fail(new Error(`embedder busy: no slot within ${opts.timeoutMs}ms`));
+                }, opts.timeoutMs);
+          const enter = (): void => {
+            clearTimeout(timer);
+            go();
+          };
+          queue.push(enter);
+        });
+      } else active++;
+      try {
+        return await embedder.embed(text, opts);
+      } finally {
+        const next = queue.shift();
+        if (next !== undefined) next();
+        else active--;
+      }
+    }
+  };
+}
+
+export const DEFAULT_QUERY_EMBED_RUNNING = 4;
+export const DEFAULT_QUERY_EMBED_WAITING = 64;
+export const DEFAULT_RECALL_IN_FLIGHT_PER_CALLER = 4;
+
 export interface RecallPluginConfig {
   embedder?: Embedder;
+  /** Query embeds that run at once, across every caller. Default 4. */
+  queryEmbedRunning?: number;
+  /** Query embeds held waiting for a slot; one past this fails at once. Default 64. */
+  queryEmbedWaiting?: number;
+  /** `POST /recall` requests one caller may have running at once. Default 4. */
+  recallInFlightPerCaller?: number;
   /**
    * Timeout for embedding a recall or `embeddingSimilar` query, in ms.
    * Reindex embeds keep the embedder's own timeout. Default 30000.
@@ -228,7 +283,14 @@ export function createRecallPlugin(cfg: RecallPluginConfig): KernelPlugin {
   const queryEmbedder =
     cfg.embedder === undefined
       ? undefined
-      : withEmbedTimeout(cfg.embedder, cfg.queryEmbedTimeoutMs ?? DEFAULT_QUERY_EMBED_TIMEOUT_MS);
+      : withEmbedTimeout(
+          withEmbedLimit(
+            cfg.embedder,
+            cfg.queryEmbedRunning ?? DEFAULT_QUERY_EMBED_RUNNING,
+            cfg.queryEmbedWaiting ?? DEFAULT_QUERY_EMBED_WAITING
+          ),
+          cfg.queryEmbedTimeoutMs ?? DEFAULT_QUERY_EMBED_TIMEOUT_MS
+        );
   // The registries below are populated by contributePostWrites as namespaces
   // register, which happens after the substrate composes. Everything that
   // consumes them must read at call time rather than resolve eagerly.
@@ -419,6 +481,8 @@ export function createRecallPlugin(cfg: RecallPluginConfig): KernelPlugin {
         // embeds the query before it filters anything, so an unauthenticated
         // caller who is ultimately shown nothing has still spent an embed.
         capability: 'read',
+        // Each call embeds its query.
+        maxInFlightPerCaller: cfg.recallInFlightPerCaller ?? DEFAULT_RECALL_IN_FLIGHT_PER_CALLER,
         handler: recallRouteHandler(recallCoreDeps)
       },
       {

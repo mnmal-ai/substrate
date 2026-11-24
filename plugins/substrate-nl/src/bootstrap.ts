@@ -6,6 +6,7 @@
  *                 every escalation is an honest hand-off.
  *   - `rulings`   optional; per-namespace override merged over declared rulings.
  *   - `packTtlMs` how long a served pack is reused. Default 300000.
+ *   - `inFlightPerCaller` asks one caller may have running at once. Default 4.
  * Host-supplied (`hostDeps.nlEngine`): schema, operators and query access.
  */
 import { defineBootstrap } from '@mnmal-ai/substrate/sdk';
@@ -27,7 +28,8 @@ export const NlBootstrapConfigSchema = z
   .object({
     judge: JudgeSchema.optional(),
     rulings: z.record(z.string(), NamespaceRulingsSchema).optional(),
-    packTtlMs: z.number().int().positive().default(300_000)
+    packTtlMs: z.number().int().positive().default(300_000),
+    inFlightPerCaller: z.number().int().positive().default(4)
   })
   .strict();
 
@@ -43,6 +45,7 @@ export const bootstrap = defineBootstrap.kernel<NlBootstrapConfig, NlHostDeps>({
     createNlPlugin({
       engine: deps.nlEngine,
       packTtlMs: config.packTtlMs,
+      inFlightPerCaller: config.inFlightPerCaller,
       ...(config.judge !== undefined
         ? { judge: new OllamaJudge(config.judge), judgeTimeoutMs: config.judge.timeoutMs }
         : {}),

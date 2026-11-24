@@ -16,7 +16,8 @@
       "type": "object",
       "additionalProperties": { "type": "object" }
     },
-    "packTtlMs": { "type": "integer", "exclusiveMinimum": 0, "default": 300000 }
+    "packTtlMs": { "type": "integer", "exclusiveMinimum": 0, "default": 300000 },
+    "inFlightPerCaller": { "type": "integer", "exclusiveMinimum": 0, "default": 4 }
   },
   "additionalProperties": false
 }
