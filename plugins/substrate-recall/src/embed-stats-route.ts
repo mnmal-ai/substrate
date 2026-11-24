@@ -12,13 +12,13 @@
  */
 
 import { jsonResponse } from '@mnmal-ai/substrate-compose';
-import { grantedIn, grantOf, readsEveryNamespace } from '@mnmal-ai/substrate-types';
 import type {
   Dataset,
   HttpHandler,
   SubstrateRequest,
   SubstrateResponse
 } from '@mnmal-ai/substrate-types';
+import { grantedIn, grantOf, readsEveryNamespace } from '@mnmal-ai/substrate-types';
 import type { EmbeddedTypeRef, EmbedSourceRegistry } from './embed-source-registry.js';
 import type { EmbedStats, EmbedStatsSnapshot } from './embed-stats.js';
 import {
@@ -170,7 +170,9 @@ export function embedStatsRouteHandler(
     const base: EmbedStatsResponse = {
       ...all,
       lastFailure: null,
-      ...(all.embeddedTypes !== undefined ? { embeddedTypes: all.embeddedTypes.filter(reads) } : {}),
+      ...(all.embeddedTypes !== undefined
+        ? { embeddedTypes: all.embeddedTypes.filter(reads) }
+        : {}),
       ...(all.lexicalTypes !== undefined ? { lexicalTypes: all.lexicalTypes.filter(reads) } : {})
     };
     if (!wantsCoverage(req)) return jsonResponse(200, base);
