@@ -727,6 +727,7 @@ export class SubscribeSubsystem {
     }
 
     if ((this.#subscriptions.get(`${ns}/${name}`)?.size ?? 0) >= MAX_SUBSCRIPTIONS_PER_TYPE) {
+      this.#metric('engine_subscription_type_full', { key });
       deliverFrame(
         input.onFrame,
         {
