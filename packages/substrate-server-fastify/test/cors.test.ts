@@ -105,4 +105,51 @@ describe('FastifySubstrateServer CORS', () => {
     expect(res.headers?.['access-control-allow-origin']).toBe('*');
     expect(res.headers?.['access-control-allow-credentials']).toBeUndefined();
   });
+
+  it('refuses a write from an origin it was not told about, whatever its content type', async () => {
+    const post = async (cors: 'unset' | 'listed' | 'any', headers: Record<string, string>) => {
+      const server = new FastifySubstrateServer(
+        cors === 'unset'
+          ? {}
+          : { cors: { origins: cors === 'any' ? '*' : ['http://localhost:5173'] } }
+      );
+      let reached = 0;
+      server.route('POST', '/substrate/v1/mutate', async () => {
+        reached++;
+        return { status: 200, body: '{}' };
+      });
+      const res = await server.inject({
+        method: 'POST',
+        path: '/substrate/v1/mutate',
+        headers: { 'content-type': 'text/plain', host: 'substrate.test', ...headers },
+        body: Buffer.from('{}')
+      });
+      return { status: res.status, reached };
+    };
+    const foreign = { origin: 'http://evil.example.com' };
+    expect(await post('unset', foreign)).toEqual({ status: 403, reached: 0 });
+    expect(await post('listed', foreign)).toEqual({ status: 403, reached: 0 });
+
+    expect(await post('unset', {})).toEqual({ status: 200, reached: 1 });
+    expect(await post('listed', { origin: 'http://localhost:5173' })).toEqual({
+      status: 200,
+      reached: 1
+    });
+    expect(await post('any', foreign)).toEqual({ status: 200, reached: 1 });
+    expect(await post('unset', { origin: 'https://substrate.test' })).toEqual({
+      status: 200,
+      reached: 1
+    });
+  });
+
+  it('leaves a read from an unlisted origin to the browser, which gets no CORS header', async () => {
+    const server = new FastifySubstrateServer();
+    server.route('GET', '/ping', async () => ({ status: 200, body: 'pong' }));
+    const res = await server.inject({
+      method: 'GET',
+      path: '/ping',
+      headers: { origin: 'http://evil.example.com' }
+    });
+    expect(res.status).toBe(200);
+  });
 });
