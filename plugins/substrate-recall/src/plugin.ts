@@ -501,6 +501,7 @@ export function createRecallPlugin(cfg: RecallPluginConfig): KernelPlugin {
         path: 'embed/reindex',
         method: 'POST',
         capability: 'admin',
+        targetNamespace: 'body',
         handler: reindexRouteHandler({
           registry: embedSourceRegistry,
           ...(cfg.resolveDataset !== undefined ? { resolveDataset: cfg.resolveDataset } : {})
@@ -513,6 +514,7 @@ export function createRecallPlugin(cfg: RecallPluginConfig): KernelPlugin {
         path: 'lexical/reindex',
         method: 'POST',
         capability: 'admin',
+        targetNamespace: 'body',
         handler: lexicalReindexRouteHandler({
           registry: lexicalSourceRegistry,
           ...(cfg.resolveDataset !== undefined ? { resolveDataset: cfg.resolveDataset } : {})
