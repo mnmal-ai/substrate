@@ -124,6 +124,24 @@
       "exclusiveMinimum": 0,
       "maximum": 9007199254740991
     },
+    "queryEmbedRunning": {
+      "default": 4,
+      "type": "integer",
+      "exclusiveMinimum": 0,
+      "maximum": 9007199254740991
+    },
+    "queryEmbedWaiting": {
+      "default": 64,
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "recallInFlightPerCaller": {
+      "default": 4,
+      "type": "integer",
+      "exclusiveMinimum": 0,
+      "maximum": 9007199254740991
+    },
     "embedBackfillIntervalMs": {
       "default": 60000,
       "type": "integer",

@@ -16,6 +16,8 @@ export interface NlPluginConfig {
   judgeTimeoutMs?: number;
   rulings?: Record<string, NamespaceRulings>;
   packTtlMs?: number;
+  /** `POST /nl` requests one caller may have running at once. Default 4. */
+  inFlightPerCaller?: number;
 }
 
 /** The routes rely on `KernelRouteClaim.capability`, which every 1.x host honours. */
@@ -37,7 +39,14 @@ export function createNlPlugin(cfg: NlPluginConfig): KernelPlugin {
     name: 'substrate-nl',
     contractVersion: CONTRACT_VERSION,
     kernelRoutes: [
-      { path: 'nl', method: 'POST', handler: askHandler(deps), capability: 'read' },
+      {
+        path: 'nl',
+        method: 'POST',
+        handler: askHandler(deps),
+        capability: 'read',
+        // Each call runs the judge model.
+        maxInFlightPerCaller: cfg.inFlightPerCaller ?? 4
+      },
       { path: 'nl/pack/:ns', method: 'GET', handler: packHandler(deps), capability: 'read' }
     ]
   };

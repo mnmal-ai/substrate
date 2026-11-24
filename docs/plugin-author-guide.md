@@ -58,6 +58,10 @@ Both tiers are declared in `@mnmal-ai/substrate/sdk`.
   - `kernelRoutes`: top-level routes under `/substrate/v1/<path>`. The first
     claim wins; a collision refuses boot. Each route must declare a
     `capability` (`'read' | 'mutate' | 'admin' | 'public'`).
+    A route whose work is costly per call can set `maxInFlightPerCaller`:
+    a caller past that many running requests is answered 429
+    `too_many_in_flight`. `POST /substrate/v1/recall` and `/substrate/v1/nl`
+    allow 4.
   - `mcpTools`: flat MCP tool registrations.
   - `kernelNamespace`: a virtual, storage-free frame surface (see
     [Contributing a frame surface from a kernel plugin](#contributing-a-frame-surface-from-a-kernel-plugin)).

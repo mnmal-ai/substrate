@@ -37,6 +37,41 @@ import { withRequestContext } from './routes/helpers.js';
  * `gate(...)` wrapper; this applies it instead, and stamps the post-trust
  * `clientIp` and `authEnabled` the route's policy checks need.
  */
+/**
+ * Runs at most `max` requests per caller on `handler` at once and answers the
+ * rest 429. It sits inside the auth wrapper, so `identity` is the verified one.
+ */
+export function withInFlightCap(handler: HttpHandler, max: number): HttpHandler {
+  const running = new Map<string, number>();
+  return async (req) => {
+    const id = req.identity?.id;
+    const caller = typeof id === 'string' ? `id:${id}` : `ip:${req.peerIp ?? 'unknown'}`;
+    const n = running.get(caller) ?? 0;
+    if (n >= max) {
+      return {
+        status: 429,
+        headers: { 'content-type': 'application/json', 'retry-after': '1' },
+        body: Buffer.from(
+          JSON.stringify({
+            code: 'too_many_in_flight',
+            message: `at most ${max} requests at once on this route; retry when one finishes`,
+            max
+          }),
+          'utf8'
+        )
+      };
+    }
+    running.set(caller, n + 1);
+    try {
+      return await handler(req);
+    } finally {
+      const left = (running.get(caller) ?? 1) - 1;
+      if (left <= 0) running.delete(caller);
+      else running.set(caller, left);
+    }
+  };
+}
+
 export function mountKernelRoute(
   server: { route(method: HttpMethod, path: string, handler: HttpHandler): void },
   claim: KernelRouteClaim,
@@ -45,10 +80,14 @@ export function mountKernelRoute(
 ): void {
   // `'public'` is the only way past the gate, and it has to be written down:
   // an absent capability must not read as a deliberate opt-out.
+  const capped =
+    claim.maxInFlightPerCaller === undefined
+      ? claim.handler
+      : withInFlightCap(claim.handler, claim.maxInFlightPerCaller);
   const inner =
     auth !== null && claim.capability === 'admin' && claim.targetNamespace === 'body'
-      ? withAdminInBodyNamespace(claim.handler, auth.adminCapability ?? 'admin')
-      : claim.handler;
+      ? withAdminInBodyNamespace(capped, auth.adminCapability ?? 'admin')
+      : capped;
   const handler =
     claim.capability !== 'public' && auth !== null
       ? withAuth(inner, auth, claim.capability)
