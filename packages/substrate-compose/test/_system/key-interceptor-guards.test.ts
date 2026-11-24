@@ -74,6 +74,24 @@ describe('_system key interceptors — lockout guard', () => {
     expect(keyRegistry.lookup('root@test')).not.toBeNull();
   });
 
+  it('writes nothing when updateKey names an id that matches no key', async () => {
+    // The grant and last-admin checks need the stored row, so they are skipped
+    // here. That is safe only while the update itself refuses a missing row.
+    const { call, create, store, keyRegistry } = await setup();
+    const admin = await create('root@test');
+    const stored = async () => JSON.stringify((await store.read('Key', {})).rows);
+    const before = await stored();
+    for (const params of [
+      { id: 'no-such-id', namespaces: 'notes:', capabilities: 'admin', revokedAt: null },
+      { id: 'no-such-id', revokedAt: LATER }
+    ]) {
+      await expect(call('updateKey', params)).rejects.toMatchObject({ code: 'not_found' });
+    }
+    expect(await stored()).toBe(before);
+    expect(keyRegistry.lookup('root@test')).not.toBeNull();
+    expect(admin.id).not.toBe('no-such-id');
+  });
+
   it('refuses dropping admin from the last active admin key', async () => {
     const { call, create } = await setup();
     const admin = await create('root@test');
