@@ -61,7 +61,8 @@ export function createEmbedStats(now: () => Date = () => new Date()): EmbedStats
     recordFailure(rowId: string, error: string): void {
       writes++;
       failures++;
-      lastFailure = { rowId, error, at: now().toISOString() };
+      // An embedder's message can be a whole response body; keep its head.
+      lastFailure = { rowId, error: error.slice(0, 500), at: now().toISOString() };
     },
     recordSkip(): void {
       writes++;
