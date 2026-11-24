@@ -71,6 +71,35 @@ describe('embedStatsRouteHandler', () => {
     expect(body.successes).toBe(1);
   });
 
+  it('shows a caller who reads one namespace only that namespace, and refuses it the coverage scan', async () => {
+    const stats = createEmbedStats();
+    stats.recordFailure('row-in-b', 'boom');
+    const registry = {
+      types: () => [
+        { namespace: 'a', type: 'T' },
+        { namespace: 'b', type: 'U' }
+      ]
+    } as unknown as Parameters<typeof embedStatsRouteHandler>[1];
+    const handler = embedStatsRouteHandler(stats, registry);
+    const bodyOf = async (req: typeof fakeReq) =>
+      JSON.parse(
+        Buffer.from((await Promise.resolve(handler(req))).body as Buffer).toString('utf8')
+      );
+    const scoped = { ...fakeReq, identity: { id: 'k', grants: { a: ['read'] } } } as typeof fakeReq;
+
+    expect(await bodyOf(scoped)).toMatchObject({
+      failures: 1,
+      lastFailure: null,
+      embeddedTypes: [{ namespace: 'a', type: 'T' }]
+    });
+    const scan = await Promise.resolve(handler({ ...scoped, query: { coverage: 'true' } }));
+    expect(scan.status).toBe(403);
+
+    const whole = await bodyOf(fakeReq);
+    expect(whole.lastFailure.rowId).toBe('row-in-b');
+    expect(whole.embeddedTypes).toHaveLength(2);
+  });
+
   it('returns enabled=false when stats is undefined', async () => {
     const handler = embedStatsRouteHandler(undefined);
     const res = await Promise.resolve(handler(fakeReq));
