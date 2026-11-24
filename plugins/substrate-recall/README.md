@@ -33,6 +33,17 @@ With no embedder configured (`embedder.kind: "off"`, the default), recall still 
 - `embedder.cacheDir`: where `onnx` downloads models. Use an absolute path.
 - `embedder.timeoutMs`: per-request timeout for write and reindex embeds (`ollama`; default `120000`).
 - `embedder.contextLength`: tokens sent to Ollama as `num_ctx` and `num_batch`. Default: the model's own, read from Ollama's `/api/show`.
+- The limits on query-time work, shown here at their defaults:
+
+  ```json
+  {
+    "embedder": { "kind": "ollama", "baseUrl": "http://localhost:11434", "model": "nomic-embed-text", "dimension": 768 },
+    "queryEmbedRunning": 4,
+    "queryEmbedWaiting": 64,
+    "recallInFlightPerCaller": 4
+  }
+  ```
+
 - `queryEmbedRunning` and `queryEmbedWaiting`: query embeds that run at once across every caller, and how many more wait for a slot (defaults `4` and `64`). One past both fails at once, as an embed timeout does. They cover `POST /recall`, `recall/Hit` frames and the `embeddingSimilar` filter, not write or reindex embeds.
 - `recallInFlightPerCaller`: `POST /recall` requests one caller may have running at once (default `4`). One more is answered 429 `too_many_in_flight`.
 - `queryEmbedTimeoutMs`: timeout for embedding a recall or `embeddingSimilar` query, so a stalled embedder answers 503 instead of holding the caller (default `30000`).

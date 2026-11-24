@@ -207,6 +207,32 @@ A date written through a mutation, and a filter operand on a date field, must be
 
 **Later:** restart.
 
+### Model calls
+
+**What you choose:** how much work may reach a model at once. In `substrate-recall.config.json`:
+
+```json
+{
+  "queryEmbedRunning": 4,
+  "queryEmbedWaiting": 64,
+  "recallInFlightPerCaller": 4
+}
+```
+
+and in `substrate-nl.config.json`:
+
+```json
+{
+  "inFlightPerCaller": 4
+}
+```
+
+**The default:** the values shown. One caller may have four `POST /substrate/v1/recall` requests and four `POST /substrate/v1/nl` requests running; one more is answered 429 `too_many_in_flight` with `retry-after`. Across every caller, four query embeds run at once and 64 wait; one past both fails at once, as an embed timeout does. Write and reindex embeds are not bounded.
+
+**What it costs:** callers are told apart by identity, so sessions that share one key share its four slots. A caller with no identity is told apart by address, an IPv6 /64 counting as one. Raise `queryEmbedRunning` only as far as the embedder serves requests in parallel: past that, the extra embeds queue inside the embedder, where the timeout still applies but the waiting bound does not.
+
+**Later:** restart.
+
 ### Index builds and free disk
 
 **What you choose:** `SUBSTRATE_INDEX_DISK_PATH` (the database volume's mount, or `off`), `SUBSTRATE_INDEX_DISK_MARGIN_MB` and `SUBSTRATE_INDEX_RETRY_INTERVAL_MS`.
