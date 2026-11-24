@@ -13,7 +13,7 @@ import { expect, it } from 'vitest';
 import { defineNamespace, field } from '../src/index.js';
 
 const NOW = new Date('2026-05-01T12:00:00.000Z');
-const alice: Identity = { id: 'alice', grants: { mail: ['read', 'mutate'] } };
+const alice: Identity = { id: 'alice', agentKeyId: 'alice', grants: { mail: ['read', 'mutate'] } };
 
 function boot(actions: Record<string, ActionDecl>) {
   const edges = new MemoryEdgesStore({ now: () => NOW });
@@ -49,7 +49,7 @@ function boot(actions: Record<string, ActionDecl>) {
     edges
   });
   const act = (sketch: string) => engine.act({ sketch, ctx: { identity: alice, now: NOW } });
-  return { act, calls };
+  return { act, calls, dataset };
 }
 
 const actions: Record<string, ActionDecl> = {
@@ -103,4 +103,15 @@ it('refuses at compose an action naming a mutation its namespace does not have',
   expect(() => assertActionGraph(new Map([['mail', { registry }]]))).toThrow(
     "'sendMessage' is not a mutation of 'mail'"
   );
+});
+
+it('hands a custom mutation the id of a record named by shortId', async () => {
+  const { act, calls, dataset } = boot(actions);
+  const made = await dataset.write('Message', [{ subject: 's', status: 'unread', shortId: 7 }], {
+    identity: { kind: 'agent', id: 'seed' },
+    now: NOW
+  });
+  expect(await act('ack Message #7')).toMatchObject({ ok: true });
+  expect(calls).toEqual([['ack', { id: made.ids[0] }]]);
+  expect(await act('ack Message #8')).toMatchObject({ ok: false, error: { code: 'not_found' } });
 });

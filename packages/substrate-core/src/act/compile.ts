@@ -469,7 +469,10 @@ class Compiler {
       if (ref !== undefined) {
         const r = this.#resolveRef(ref);
         if ('late' in r) late.id = r.late;
-        else params.id = r.value;
+        // The generated update resolves a shortId itself; a custom mutation is handed the id.
+        else if (action.mutation !== undefined && typeof ref === 'string' && ref.startsWith('#')) {
+          late.id = { ref: { type: target.qualified, shortId: Number(r.value) } };
+        } else params.id = r.value;
       }
       Object.assign(params, built.params);
       Object.assign(late, built.late);
