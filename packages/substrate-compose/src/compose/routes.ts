@@ -21,7 +21,7 @@ import type {
   StorageReport,
   SubstrateServer
 } from '@mnmal-ai/substrate-types';
-import { grantedIn, grantOf } from '@mnmal-ai/substrate-types';
+import { grantedIn, grantOf, holdsEverywhere } from '@mnmal-ai/substrate-types';
 import { backfillFieldRoute } from '../_system/backfill-field.js';
 import { dropNamespaceRoute, dropTypeRoute } from '../_system/drop.js';
 import type { KeyRegistry } from '../_system/index.js';
@@ -287,12 +287,12 @@ export async function registerCoreRoutes(args: CoreRoutesArgs): Promise<{
   const adminCap = adminCapability ?? 'admin';
   const adminInTarget = (handler: HttpHandler): HttpHandler =>
     auth === undefined ? handler : withAdminInBodyNamespace(handler, adminCap);
-  // A store-wide action needs admin held store-wide: the `'*'` entry itself, not admin in some namespace.
+  // A store-wide action needs admin in every namespace: under `*`, with no explicit entry narrowing it.
   const adminStoreWide =
     (handler: HttpHandler): HttpHandler =>
     async (req) => {
       if (auth === undefined) return handler(req);
-      if (grantedIn(grantOf(req.identity ?? null), '*').includes(adminCap)) return handler(req);
+      if (holdsEverywhere(req.identity ?? null, adminCap)) return handler(req);
       return {
         status: 403,
         headers: { 'content-type': 'application/json' },
@@ -315,6 +315,8 @@ export async function registerCoreRoutes(args: CoreRoutesArgs): Promise<{
       : {
           holds: (req: Parameters<HttpHandler>[0], ns: string, cap: string) =>
             grantedIn(grantOf(req.identity ?? null), ns).includes(cap),
+          holdsEverywhere: (req: Parameters<HttpHandler>[0], cap: string) =>
+            holdsEverywhere(req.identity ?? null, cap),
           adminCapability: adminCap
         };
   // Drop-namespace + drop-type admin ops. Both emit AuditEvent inside the
