@@ -1062,11 +1062,13 @@ export function createMcpServer(endpoint: string, options: McpServerOptions = {}
   );
   for (const t of TOOLS) {
     if (!allowed.has(t.name)) continue;
-    const annotations = READ_ONLY_TOOLS.has(t.name)
-      ? { readOnlyHint: true }
-      : { destructiveHint: DESTRUCTIVE_TOOLS.has(t.name) };
+    // Only a tool that changes nothing says so. Every other tool keeps the
+    // protocol's default, which a host reads as able to overwrite or delete.
+    const config = READ_ONLY_TOOLS.has(t.name)
+      ? { ...t.config, annotations: { readOnlyHint: true } }
+      : t.config;
     // biome-ignore lint/suspicious/noExplicitAny: config.inputSchema varies per tool
-    server.registerTool(t.name, { ...t.config, annotations } as any, t.handler);
+    server.registerTool(t.name, config as any, t.handler);
   }
 
   return server;
@@ -1080,14 +1082,6 @@ const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
   'whoami',
   'recall'
 ]);
-/** Tools that can remove data: the drops, and `mutate` and `run`, which reach deletes. */
-const DESTRUCTIVE_TOOLS: ReadonlySet<string> = new Set([
-  'drop_namespace',
-  'drop_type',
-  'mutate',
-  'run'
-]);
-
 /** The tools a worker agent needs; the admin tools and `ask` are opt-in. */
 export const CORE_TOOLS: readonly string[] = [
   'query',
