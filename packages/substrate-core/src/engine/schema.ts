@@ -51,6 +51,19 @@ export class SchemaSubsystem {
   #federatedSchemaCache: Record<string, Schema> | undefined;
   #federatedSchemaVersionCache: string | undefined;
   /**
+   * The schemas cached for the bridge behind `alias`, keyed by the peer's own
+   * namespace names, and the one of them the alias addresses: the peer's
+   * namespace of the same name, else the first it exposes, as the federated
+   * merge reads it. Undefined until `refreshBridgeSchemas()` has cached one.
+   */
+  bridgeSchemas(alias: string): { ns: string; schemas: Record<string, Schema> } | undefined {
+    const schemas = this.#bridgeSchemaCache.get(alias);
+    if (schemas === undefined) return undefined;
+    const ns = Object.hasOwn(schemas, alias) ? alias : Object.keys(schemas)[0];
+    return ns === undefined ? undefined : { ns, schemas };
+  }
+
+  /**
    * Per-bridge schema cache keyed by the local alias. Populated by
    * `refreshBridgeSchemas()` (opt-in) and surfaced through `federatedSchema()`
    * so multi-ns agents can see bridged types without a second round-trip.
