@@ -2,6 +2,33 @@
 
 Releases before 1.0.0-alpha.21 are recorded only in their GitHub release notes.
 
+## 1.0.0-beta.14 (2026-11-23)
+
+Changes since 1.0.0-beta.13. This release closes the findings of a security audit of the repository. No schema version moves and there is no migration. The `lean` MCP preset is unchanged. Several requests that used to be answered are now refused; they are listed under *Changed* first.
+
+### Changed
+
+- **A writing mutation sent to `/substrate/v1/query` is refused (#307).** It answers `mutation_on_query`; send it to `/substrate/v1/mutate`. `get<T>` still answers on either route. On `/mutate`, a reading entry (a type, or `get<T>`) now needs `read` as well.
+- **A write that carries an unknown browser `Origin` is refused (#315).** A request that is not `GET`, `HEAD` or `OPTIONS` and names an `Origin` gets `403 forbidden_origin` unless the origin is in the configured CORS origins or is the server's own host. Clients that send no `Origin` are unaffected.
+- **Sentinel coordinator rows are written by the register route or a namespace admin (#309).** A direct `create`, `update` or `delete` of `Coordinator`, `CoordinatorNamespace` or `CoordinatorBridge` from any other caller answers `policy_denied`, with auth off as well.
+- **`GET /substrate/v1/config`, `promote-fields` and drops from a `_system_*` namespace need admin in every namespace (#311, #313).** Admin under `*` with no explicit entry narrowing it. Admin in one namespace answers `403` with `required: '*:admin'`.
+- **Recall's reindex routes need admin in the namespace they act on (#312).** `embed/reindex` and `lexical/reindex` answered for admin held anywhere. A kernel route can declare `targetNamespace: 'body'` to get the same check.
+- **A walk in a bridged query is checked against the caller's grant (#308, #317).** It is forwarded when every namespace it reaches is the entry's own, or one a bridge to the same peer serves here under its own name and the caller reads. Otherwise it answers `bridge_walk_refused`, as does a walk that cannot be resolved from the bridge's cached schema. A caller that reads every namespace is unaffected.
+
+### Fixed
+
+- **A read grant no longer writes (#307).** The per-frame gate took the required capability from the route, so a mutation key sent to `/query` ran under `read`: a read-only key could create, update and delete rows, and in auth mode `attribute` a caller with no token could delete them. Those writes ran outside a transaction and reached no subscriber. The engine now decides from what the entry does.
+- **A bridged walk no longer reads past the caller's grant (#308).** The peer answers a forwarded frame under the bridge's credential, so a walk into another namespace returned rows the local caller held no grant for.
+- **Recall `crystallise` accretes only into clusters the caller can read (#310).** In `accrete` mode a caller could attach its own row to a cluster of rows it cannot read and get back that cluster's label and member count.
+- **A tokenless caller no longer boosts salience (#312).** In auth mode `attribute`, `/recall` and `/embeddings/fetch` with `boost: true` changed stored salience for a caller with no identity. The engine's write probe now refuses one where auth is on.
+- **Proposal replay never replaces a mutation with a type (#313).** A proposal record naming a mutation key, such as `createNote` or `propose_type`, was reinstalled over that entry at boot and left it broken for the namespace across restarts. The row is now skipped.
+- **A `row()` policy hides its rows from pagination too (#318).** `hasMore` and the cursor came from the unfiltered read, so a `where` on a hidden row's field answered yes or no. A row-filtered page now reads on past hidden rows, up to 5000 a read, and reports `hasMore` from visible rows only.
+- **The MCP `run` sandbox (#314, #316, #319).** A script could signal other processes of the server's user, which Node's permission model does not cover; the child's `process` can no longer send one. The child refuses to run a script when the permission model is not active, as under a runtime that ignores the flags. On Linux with bubblewrap, the child also starts in pid, network, ipc and uts namespaces of its own over a read-only filesystem.
+
+### Dependencies
+
+- `semver` 7.8.5 to 7.8.6 (#302).
+
 ## 1.0.0-beta.13 (2026-11-23)
 
 Changes since 1.0.0-beta.12. No schema version moves and there is no migration. Sketches, frames and replies keep their meaning, and the `lean` MCP preset is unchanged. On Postgres, a write inside a transaction now takes a shared per-type advisory lock, one extra statement per transactional write.
