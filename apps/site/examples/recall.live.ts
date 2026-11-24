@@ -1,4 +1,4 @@
-// Run with `node apps/site/examples/recall.live.ts`. Needs `fastembed` installed where the
+// Run with `node apps/site/examples/recall.live.ts`. Needs the onnx backends installed where the
 // embedder package resolves it, and downloads bge-base on first use. Writes a gitignored file.
 import { normalise, runExample, writeTranscript } from './_harness.ts';
 import { app } from './recall/namespace.ts';

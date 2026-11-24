@@ -27,6 +27,7 @@ const RAW: Array<[string, RegExp]> = [
 /** Files allowed a match, and why. */
 const ALLOWED: Record<string, string> = {
   'packages/substrate-embedder/src/ollama.ts': 'calls Ollama, not Substrate',
+  'packages/substrate-embedder/src/onnx.ts': 'downloads its model from Hugging Face, not Substrate',
   'plugins/substrate-nl/src/judge/ollama.ts': 'calls Ollama, not Substrate',
   'plugins/substrate-recall/src/row-visibility.ts': 'a parameter named fetch',
   'plugins/substrate-recall/src/pg-embeddings-store.ts': 'a local function named fetch'

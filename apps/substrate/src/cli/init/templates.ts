@@ -78,7 +78,7 @@ export function envBinaryTemplate(ctx: TemplateContext): string {
 }
 
 /**
- * The in-process models, run by fastembed. Each name is a key of
+ * The in-process models, run on ONNX Runtime. Each name is a key of
  * `OnnxEmbedder`'s model map, and the dimension is the model's own.
  */
 const ONNX_MODELS = {
@@ -86,15 +86,18 @@ const ONNX_MODELS = {
   'bge-base': { model: 'bge-base-en-v1.5', dimension: 768 }
 } as const;
 
-/** The onnx embedder's backend. Undeclared by substrate-embedder, so the runtime installs it. */
-export const FASTEMBED_RANGE = '^3.0.0';
+/** The onnx embedder's backends. Undeclared by substrate-embedder, so the runtime installs them. */
+export const ONNX_BACKENDS = {
+  'onnxruntime-node': '^1.30.0',
+  '@huggingface/tokenizers': '^0.2.0'
+} as const;
 
 /**
  * `<runtime>/substrate-recall.config.json`, or null for `--embedder=none`. The
  * recall plugin reads its embedder from this file (merged by the manifest
  * loader), not from env.
  *
- * `cacheDir` is absolute because fastembed's own default is `local_cache`
+ * `cacheDir` is absolute because the embedder's own default is `local_cache`
  * under the working directory, which moves with whoever starts the server.
  */
 export function recallConfigTemplate(embedder: EmbedderMode, runtimeDir: string): string | null {
@@ -200,7 +203,7 @@ export function runtimePackageJsonTemplate(ctx: TemplateContext): string {
     : `^${ctx.substrateVersion.split('.')[0]}.0.0`;
   const deps: Record<string, string> = { '@mnmal-ai/substrate': range };
   for (const p of ctx.plugins) deps[pluginNpmName(p)] = pluginRange(p, range);
-  if (ctx.embedder === 'minilm' || ctx.embedder === 'bge-base') deps.fastembed = FASTEMBED_RANGE;
+  if (ctx.embedder === 'minilm' || ctx.embedder === 'bge-base') Object.assign(deps, ONNX_BACKENDS);
   return `${JSON.stringify({ name: 'substrate-runtime', private: true, dependencies: deps }, null, 2)}\n`;
 }
 
@@ -297,7 +300,9 @@ function recallReadmeLines(embedder: Exclude<EmbedderMode, 'none'>): string[] {
         ]
       : [
           `\`substrate-recall.config.json\` runs \`${ONNX_MODELS[embedder].model}\` in-process ` +
-            'through `fastembed`, which `pnpm install` adds (about 540MB, most of it ONNX Runtime). ' +
+            'on `onnxruntime-node`, which `pnpm install` adds (about 300MB). Its install script also ' +
+            'fetches GPU libraries of about 1.4GB that a CPU server never loads; ' +
+            'run `ONNXRUNTIME_NODE_INSTALL_CUDA=skip pnpm install` to leave them out. ' +
             'The first write downloads the model into `models/`.'
         ];
   lines.push(

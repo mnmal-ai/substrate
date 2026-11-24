@@ -27,7 +27,7 @@ With no embedder configured (`embedder.kind: "off"`, the default), recall still 
 
 `config.schema.json` is the authoritative list. The usual knobs:
 
-- `embedder.kind`: `"onnx"` (in-process, needs `fastembed` installed), `"ollama"`, `"fake"` (tests) or `"off"`.
+- `embedder.kind`: `"onnx"` (in-process, needs `onnxruntime-node` and `@huggingface/tokenizers` installed), `"ollama"`, `"fake"` (tests) or `"off"`.
 - `embedder.model` and `embedder.dimension`: for example `all-MiniLM-L6-v2` / `384` on onnx, or any Ollama embedding model and its dimension.
 - `embedder.baseUrl`: Ollama server URL (`ollama` only; required).
 - `embedder.cacheDir`: where `onnx` downloads models. Use an absolute path.
