@@ -91,7 +91,12 @@ async function start(m: Start): Promise<void> {
     // The sandbox is Node's permission model, switched on by flags the parent
     // passes. A runtime that ignores those flags would run the script unconfined.
     const permission = (process as { permission?: { has(scope: string): boolean } }).permission;
-    if (permission === undefined || permission.has('child') || permission.has('fs.write')) {
+    if (
+      permission === undefined ||
+      permission.has('child') ||
+      permission.has('fs.write') ||
+      permission.has('net')
+    ) {
       throw new Error('the run sandbox is not active in this runtime; the script was not run');
     }
     // The parent passes no environment; a launcher in between may add its own (bubblewrap sets PWD).

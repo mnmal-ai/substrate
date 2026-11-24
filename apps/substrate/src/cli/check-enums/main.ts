@@ -171,7 +171,9 @@ async function scanField(field: EnumField, opts: ScanOptions): Promise<EnumField
     };
     const failure = envelope.errors?.[0];
     if (failure !== undefined) {
-      throw new Error(`query ${key} rejected: ${failure.code ?? 'error'} ${failure.message ?? ''}`);
+      throw new Error(
+        oneLine(`query ${key} rejected: ${failure.code ?? 'error'} ${failure.message ?? ''}`)
+      );
     }
 
     const rows = envelope.data?.[key];
@@ -392,7 +394,7 @@ export async function recordVerdicts(
     };
     if (envelope.errors?.[0] !== undefined) {
       process.stderr.write(
-        `verdict lookup for ${id} refused: ${envelope.errors[0].code ?? 'error'} ${envelope.errors[0].message ?? ''}\n`
+        `${oneLine(`verdict lookup for ${id} refused: ${envelope.errors[0].code ?? 'error'} ${envelope.errors[0].message ?? ''}`)}\n`
       );
       return 3;
     }
@@ -416,7 +418,7 @@ export async function recordVerdicts(
     const mutFailure = mutEnvelope.errors?.[0];
     if (mutFailure !== undefined) {
       process.stderr.write(
-        `verdict write for ${id} refused: ${mutFailure.code ?? 'error'} ${mutFailure.message ?? ''}\n`
+        `${oneLine(`verdict write for ${id} refused: ${mutFailure.code ?? 'error'} ${mutFailure.message ?? ''}`)}\n`
       );
       return 3;
     }
