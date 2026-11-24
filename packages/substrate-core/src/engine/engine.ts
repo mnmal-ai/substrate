@@ -28,6 +28,7 @@
  */
 
 import {
+  forEachWalkHop,
   getExtensionOperator,
   listExtensionOperators,
   type TypeRef,
@@ -192,16 +193,25 @@ interface SlotResult {
   errors?: FrameErrors;
 }
 
-/** A frame entry whose where, selection or grouping can leave its own type. */
-function bridgedWalk(entry: FrameEntry): boolean {
-  const frame = entry as Record<string, unknown>;
-  if (walkGrammarPath(frame, { walkParams: false }) !== null) return true;
-  const params = frame.params;
-  return (
-    typeof params === 'object' &&
-    params !== null &&
-    ['aggregate', 'groupBy', 'having'].some((k) => Object.hasOwn(params, k))
-  );
+/**
+ * The far type of one walk hop from `near`, read from `fieldsOf`: the type an
+ * `in` names, or the target of the crossRef an `out` follows. Undefined for
+ * anything else.
+ */
+function hopFarType(
+  node: Record<string, unknown>,
+  near: TypeRef,
+  fieldsOf: (ref: TypeRef) => Record<string, FieldDef> | undefined
+): TypeRef | undefined {
+  if (typeof node.in === 'string' && node.out === undefined) {
+    const m = /^([^/]+)\/([^./]+)\.[^.]+$/.exec(node.in);
+    return m?.[1] !== undefined && m[2] !== undefined ? { ns: m[1], type: m[2] } : undefined;
+  }
+  if (typeof node.out !== 'string' || node.in !== undefined) return undefined;
+  const fields = fieldsOf(near);
+  const def =
+    fields !== undefined && Object.hasOwn(fields, node.out) ? fields[node.out] : undefined;
+  return def?.kind === 'crossRef' ? { ns: def.ns, type: def.type } : undefined;
 }
 
 /** Rows a row-filtered page scans before it stops and hands back a cursor. */
@@ -819,13 +829,16 @@ export class Engine implements ActHandle {
         this.#bridges.has(parsed.ns)
       ) {
         if (this.#refuseUngranted(envelope, key, parsed.ns, ctx.identity, 'query')) continue;
-        // The peer answers under the bridge's credential, and which namespaces
-        // a walk reaches there is not known here.
-        if (bridgedWalk(entry) && !readsEveryNamespace(ctx.identity)) {
+        // The peer answers under the bridge's credential, so a walk is forwarded
+        // only when every namespace it reaches is one this caller may read.
+        if (
+          !readsEveryNamespace(ctx.identity) &&
+          !this.#bridgedWalksReadable(parsed.ns, parsed.name, entry, ctx.identity)
+        ) {
           addError(
             envelope,
             [key],
-            `a walk in a bridged query needs read on every namespace (op-key '${key}')`,
+            `a walk in a bridged query reaches a namespace this grant does not cover, or one that cannot be resolved (op-key '${key}')`,
             'bridge_walk_refused'
           );
           this.#metric('engine_bridge_walk_refused', { key });
@@ -1780,6 +1793,54 @@ export class Engine implements ActHandle {
    * under `key` and returns true when `identity` may not run `operation` in
    * `ns`. Bridged keys pass through here too, before they are proxied.
    */
+  /**
+   * Whether every namespace the walks of a bridged query entry reach is one
+   * `identity` may read. Each hop is resolved from the schema cached for the
+   * bridge. A far namespace other than the entry's own counts as readable only
+   * when a bridge to the same peer serves it here under its own name and the
+   * caller holds `read` on it, so the walk shows nothing a direct read would
+   * not. A hop that cannot be resolved is not readable.
+   */
+  #bridgedWalksReadable(
+    alias: string,
+    type: string,
+    entry: FrameEntry,
+    identity: RequestContext['identity'] | null | undefined
+  ): boolean {
+    const frame = entry as Record<string, unknown>;
+    const params = frame.params as Record<string, unknown> | null | undefined;
+    const groupBy = params?.groupBy;
+    // Walked group keys are read from an object `groupBy` only.
+    if (groupBy !== undefined && (typeof groupBy !== 'object' || Array.isArray(groupBy)))
+      return false;
+
+    const cached = this.#schema.bridgeSchemas(alias);
+    const peer = this.#bridges.get(alias)?.baseUrl;
+    const fieldsOf = (ref: TypeRef): Record<string, FieldDef> | undefined => {
+      const types = cached?.schemas[ref.ns]?.types;
+      return types !== undefined && Object.hasOwn(types, ref.type)
+        ? types[ref.type]?.fields
+        : undefined;
+    };
+    const readable = (ns: string): boolean =>
+      ns === cached?.ns ||
+      (!this.#namespaces.has(ns) &&
+        !this.#datasets.has(ns) &&
+        peer !== undefined &&
+        this.#bridges.get(ns)?.baseUrl === peer &&
+        this.#schema.bridgeSchemas(ns)?.ns === ns &&
+        checkIdentityGrant(identity, ns, 'query').ok);
+
+    let ok = true;
+    forEachWalkHop(frame, { ns: cached?.ns ?? alias, type }, (hop, near) => {
+      const far = cached === undefined ? undefined : hopFarType(hop.node, near, fieldsOf);
+      if (far !== undefined && readable(far.ns)) return far;
+      ok = false;
+      return undefined;
+    });
+    return ok;
+  }
+
   #refuseUngranted(
     envelope: PackEnvelope,
     key: string,
