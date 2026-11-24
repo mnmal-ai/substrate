@@ -55,13 +55,16 @@ describe('_system write routes', () => {
     expect(await drop(['default'])).not.toBe(403);
   });
 
-  it('need store-wide admin to drop from a `_system_*` control namespace', async () => {
+  it('need store-wide admin to act on a `_system_*` control namespace', async () => {
     const control = '_system_proposals';
     const type = { namespace: control, type: 'NamespaceProposal', confirm: 'NamespaceProposal' };
     const whole = { namespace: control, confirm: control };
+    const field = { namespace: control, type: 'NamespaceProposal', field: 'archived' };
     for (const [route, target] of [
       ['drop-type', type],
-      ['drop-namespace', whole]
+      ['drop-namespace', whole],
+      ['backfill-field', { ...field, values: { a: true } }],
+      ['normalise-vocab', field]
     ] as const) {
       expect(await drop([control], route, target)).toBe(403);
       expect(JSON.parse(lastBody)).toEqual({ code: 'forbidden', required: '*:admin' });
