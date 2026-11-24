@@ -21,9 +21,17 @@ dirs() {
     cut -d/ -f1-2 | sort -u
 }
 
-# Parts, one per line: "<dir> <part> <file prefix under the package>".
+# Parts, one per line: "<dir> <part> <file prefix under the package>...".
+# No file may match two parts.
 parts() {
-  echo "apps/substrate migrate-store test/migrate-store-"
+  echo "apps/substrate migrate-store-verify test/migrate-store-verify"
+  echo "apps/substrate migrate-store test/migrate-store-c test/migrate-store-p"
+}
+
+# The file prefixes of one part of a package, or of all its parts, one per line.
+prefixes() {
+  parts | awk -v d="$1" -v p="${2:-}" \
+    '$1 == d && (p == "" || $2 == p) { for (i = 3; i <= NF; i++) print $i }'
 }
 
 # Every pass, one per line: "<dir>" or "<dir> <part>".
@@ -39,14 +47,13 @@ run() {
   local -a select=()
   : "${POSTGRES_URL:?POSTGRES_URL must name the substrate_test database}"
   if [ -n "$part" ]; then
-    prefix=$(parts | awk -v d="$d" -v p="$part" '$1 == d && $2 == p { print $3 }')
-    [ -n "$prefix" ] || { echo "::error::$d has no part '$part'"; exit 2; }
-    select=("$prefix")
+    mapfile -t select < <(prefixes "$d" "$part")
+    [ "${#select[@]}" -gt 0 ] || { echo "::error::$d has no part '$part'"; exit 2; }
   else
     # The package's own pass leaves out what its parts run.
     while read -r prefix; do
-      [ -n "$prefix" ] && select+=("--exclude=${prefix}*")
-    done < <(parts | awk -v d="$d" '$1 == d { print $3 }')
+      select+=("--exclude=${prefix}*")
+    done < <(prefixes "$d")
   fi
   echo "::group::$d${part:+ $part}"
   # Each package's globalSetup moves it into a schema of its own.
