@@ -2101,6 +2101,27 @@ export class Engine implements ActHandle {
       return null;
     }
 
+    // The gate above judged the route's operation; the entry decides what it
+    // does. get<T> is registered as a mutation and is the one that only reads.
+    const reads = registryEntry.kind !== 'mutation' || registryEntry.verb === 'get';
+    if (operation === 'query' && !reads) {
+      // A write here would run with no transaction, unseen by subscribers.
+      addError(
+        envelope,
+        [key],
+        `cannot query mutation '${key}' — send it to mutate`,
+        'mutation_on_query'
+      );
+      this.#metric('engine_mutation_on_query', { key });
+      return null;
+    }
+    if (
+      operation === 'mutate' &&
+      reads &&
+      this.#refuseUngranted(envelope, key, ns, ctxBase.identity, 'query')
+    )
+      return null;
+
     // A by-filter mutation's `where` is a query's `where` on its target type.
     const filterTarget = operation === 'mutate' ? registryEntry.filterTarget : undefined;
     // What lets this read's walks leave `ns`, judged for this caller.
