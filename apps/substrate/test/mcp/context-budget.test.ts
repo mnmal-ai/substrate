@@ -27,7 +27,8 @@ describe('MCP context budget', () => {
   it('each core tool definition fits its budget', async () => {
     for (const t of await listTools()) {
       const bytes = Buffer.byteLength(JSON.stringify(t));
-      expect(bytes, t.name).toBeLessThanOrEqual(t.name === 'query' ? 1800 : 1200);
+      // Each definition carries one annotation, about 35 bytes.
+      expect(bytes, t.name).toBeLessThanOrEqual(t.name === 'query' ? 1840 : 1240);
     }
   });
 

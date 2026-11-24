@@ -942,7 +942,9 @@ export function createMcpServer(endpoint: string, options: McpServerOptions = {}
           confirm: z
             .string()
             .min(1)
-            .describe('Must equal `namespace` exactly (confirmation gate).'),
+            .describe(
+              'Must equal `namespace` exactly. It guards against a mistyped name; it is not a confirmation by a person.'
+            ),
           dryRun: z
             .boolean()
             .optional()
@@ -971,7 +973,9 @@ export function createMcpServer(endpoint: string, options: McpServerOptions = {}
           confirm: z
             .string()
             .min(1)
-            .describe('Must equal "<namespace>/<type>" exactly (confirmation gate).'),
+            .describe(
+              'Must equal "<namespace>/<type>" exactly. It guards against a mistyped name; it is not a confirmation by a person.'
+            ),
           dryRun: z
             .boolean()
             .optional()
@@ -1058,12 +1062,31 @@ export function createMcpServer(endpoint: string, options: McpServerOptions = {}
   );
   for (const t of TOOLS) {
     if (!allowed.has(t.name)) continue;
+    const annotations = READ_ONLY_TOOLS.has(t.name)
+      ? { readOnlyHint: true }
+      : { destructiveHint: DESTRUCTIVE_TOOLS.has(t.name) };
     // biome-ignore lint/suspicious/noExplicitAny: config.inputSchema varies per tool
-    server.registerTool(t.name, t.config as any, t.handler);
+    server.registerTool(t.name, { ...t.config, annotations } as any, t.handler);
   }
 
   return server;
 }
+
+/** Tools that change nothing, for a host that asks before a write. */
+const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
+  'schema',
+  'query',
+  'ask',
+  'whoami',
+  'recall'
+]);
+/** Tools that can remove data: the drops, and `mutate` and `run`, which reach deletes. */
+const DESTRUCTIVE_TOOLS: ReadonlySet<string> = new Set([
+  'drop_namespace',
+  'drop_type',
+  'mutate',
+  'run'
+]);
 
 /** The tools a worker agent needs; the admin tools and `ask` are opt-in. */
 export const CORE_TOOLS: readonly string[] = [
