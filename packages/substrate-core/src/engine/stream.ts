@@ -22,6 +22,8 @@ import type {
   WsResponseFrame
 } from '@mnmal-ai/substrate-types';
 import {
+  grantRefusal,
+  grantRefusalCode,
   isResolverFrameError,
   WALKS_IN_SUBSCRIPTION,
   WS_CODE_SUBSCRIPTION_UNSUPPORTED_FRAME
@@ -234,10 +236,7 @@ export class StreamSubsystem {
     // query/mutate/subscribe paths so one seam covers every dispatch verb.
     const nsGate = checkIdentityGrant(input.ctx.identity, ns, 'stream');
     if (!nsGate.ok) {
-      await emitError(
-        `namespace '${ns}' not in identity's allowed namespaces`,
-        'unauthorized_namespace'
-      );
+      await emitError(grantRefusal(ns, nsGate), grantRefusalCode(nsGate));
       return;
     }
 

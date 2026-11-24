@@ -10,6 +10,7 @@ import {
   type SubstrateClient
 } from '@mnmal-ai/substrate-client';
 import { stringifyJson } from '@mnmal-ai/substrate-types';
+import { jsonForTerminal, oneLine } from '../../terminal-text.js';
 
 export interface RunCliOptions {
   write?: (s: string) => void;
@@ -113,9 +114,9 @@ export async function runRun(argv: string[], options: RunCliOptions = {}): Promi
   if (out !== undefined) {
     writeFileSync(out, json);
     write(
-      `${report.ok ? 'ok' : `failed: ${report.error}`} · ${report.mutations.length} mutation(s) · ${report.warnings.length} warning(s) · report in ${out}\n`
+      `${report.ok ? 'ok' : `failed: ${oneLine(report.error)}`} · ${report.mutations.length} mutation(s) · ${report.warnings.length} warning(s) · report in ${out}\n`
     );
-  } else write(json);
+  } else write(jsonForTerminal(json));
   return report.ok ? 0 : 1;
 }
 

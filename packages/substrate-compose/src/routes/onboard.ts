@@ -8,7 +8,13 @@
  * `onboardRoute` serialises it once and replies with the cached response.
  */
 
-import type { BridgeRegistry, CoordinatorPlugin, HttpHandler } from '@mnmal-ai/substrate-types';
+import {
+  type BridgeRegistry,
+  type CoordinatorPlugin,
+  grantOf,
+  type HttpHandler,
+  seesNamespace
+} from '@mnmal-ai/substrate-types';
 import { jsonResponse } from './helpers.js';
 
 export interface OnboardDeps {
@@ -224,8 +230,12 @@ const AUTH_INSTRUCTIONS = {
  * `default`. Falls back to `default` only when no coordinator is loaded
  * (admin-only boot).
  */
-function buildFrameGrammar(coordinators: ReadonlyArray<CoordinatorPlugin>): Record<string, string> {
-  const exampleNs = coordinators[0]?.namespaces[0]?.namespace ?? 'default';
+function buildFrameGrammar(
+  coordinators: ReadonlyArray<CoordinatorPlugin>,
+  sees: Sees
+): Record<string, string> {
+  const exampleNs =
+    coordinators.flatMap((p) => p.namespaces.map((n) => n.namespace)).find(sees) ?? 'default';
   return {
     queryKey: '<ns>/<TypeName>',
     mutationKey: '<ns>/<mutationName>',
@@ -259,20 +269,29 @@ function buildPluginRoutes(
   return out;
 }
 
-function buildBinaryMetadata(deps: OnboardDeps): BinaryMetadata {
+/** Whether the caller is told of a namespace. */
+type Sees = (ns: string) => boolean;
+
+function buildBinaryMetadata(deps: OnboardDeps, sees: Sees): BinaryMetadata {
   return {
     coordinators: deps.coordinators.map((p) => ({
       name: p.name,
-      namespaces: p.namespaces.map((n) => n.namespace)
+      namespaces: p.namespaces.map((n) => n.namespace).filter(sees)
     })),
-    bridges: deps.bridges.entries().map(([ns, client]) => ({ ns, name: client.name })),
+    bridges: deps.bridges
+      .entries()
+      .filter(([ns]) => sees(ns))
+      .map(([ns, client]) => ({ ns, name: client.name })),
     authEnabled: deps.authEnabled,
     filterOperators: deps.filterOperators,
-    virtualNamespaces: deps.virtualNamespaces
+    virtualNamespaces: deps.virtualNamespaces.filter(sees)
   };
 }
 
-export function buildOnboardBody(deps: OnboardDeps): Record<string, unknown> {
+export function buildOnboardBody(
+  deps: OnboardDeps,
+  sees: Sees = () => true
+): Record<string, unknown> {
   const instructions: Record<string, unknown> = {
     query: HTTP_INSTRUCTIONS.query,
     mutate: HTTP_INSTRUCTIONS.mutate,
@@ -293,13 +312,20 @@ export function buildOnboardBody(deps: OnboardDeps): Record<string, unknown> {
   return {
     substrate: 'agent-onboard',
     version: deps.version,
-    binary: buildBinaryMetadata(deps),
-    frameGrammar: buildFrameGrammar(deps.coordinators),
+    binary: buildBinaryMetadata(deps, sees),
+    frameGrammar: buildFrameGrammar(deps.coordinators, sees),
     instructions
   };
 }
 
 export function onboardRoute(deps: OnboardDeps): HttpHandler {
   const cached = jsonResponse(200, buildOnboardBody(deps));
-  return async () => cached;
+  return async (req) => {
+    if (grantOf(req.identity) === null) return cached;
+    // A caller with a grant is told only of the namespaces it names.
+    return jsonResponse(
+      200,
+      buildOnboardBody(deps, (ns) => seesNamespace(req.identity, ns))
+    );
+  };
 }

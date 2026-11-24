@@ -20,7 +20,7 @@ than its behaviour.
 | **whoami** | `GET /substrate/v1/whoami` | `whoami` | — |
 | onboarding doc | `GET /substrate/v1/onboard` | — | — |
 | schema: overview of all types | — | `schema` (no args): one line of `field: type` per type, and the same overview in the MCP `instructions` at session start | — |
-| schema: all namespaces | `GET /substrate/v1/federated-schema` | `schema {full: true}` | — |
+| schema: every namespace the caller's grant names | `GET /substrate/v1/federated-schema` | `schema {full: true}` | — |
 | schema: one namespace | `GET /substrate/v1/schema/<ns>` | `schema {namespace}` | — |
 | schema: one type | `GET /substrate/v1/schema/<ns>/<Type>[?shape=]` | `schema {namespace,type,shape}` | — |
 | schema: default namespace | `GET /substrate/v1/schema` | — | — |

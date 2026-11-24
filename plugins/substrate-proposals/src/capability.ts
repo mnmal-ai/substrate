@@ -7,6 +7,7 @@ import { resolveIdentity } from '@mnmal-ai/substrate-sdk';
 import {
   BatchElementError,
   CLIENT_SUPPLIED_SERVER_FIELD,
+  checkIdentityGrant,
   type Dataset,
   type Id,
   type Policy,
@@ -182,6 +183,16 @@ export function stampProposedBy(registry: Registry, types: readonly string[]): v
 }
 
 /**
+ * The refusal for a caller who cannot read `ns`, or undefined for one who
+ * can: whether a namespace holds rows is told only to its readers.
+ */
+function unread(ctx: RequestContext, ns: string, dropCapability: string): string | undefined {
+  return checkIdentityGrant(ctx.identity, ns, 'query').ok
+    ? undefined
+    : `needs '${dropCapability}', or read in '${ns}' to show that no stored rows are affected`;
+}
+
+/**
  * Why `typeName` is already defined, or undefined when it is free: it has
  * stored rows, or another live (applied, not archived) proposal defines it.
  * A second live definition would make boot replay choose between them.
@@ -285,6 +296,8 @@ export function gateTypeProposalRemoval(
           : given;
       const params = args.params ?? {};
       if (!trusted && isRemoval(params) && !gate(ctx, args).allow) {
+        const blind = unread(ctx, ctx.namespace, dropCapability);
+        if (blind !== undefined) throw deny(ctx, blind);
         if (key === 'createTypeProposal') {
           // No stored row yet: the name it would apply is the one to check.
           const name = params.typeName;
@@ -388,6 +401,8 @@ export function gateFieldProposalRemoval(
         new ResolverFrameError('policy_denied', `${key}: ${why}`, {
           required: `${ctx.namespace}:${dropCapability}`
         });
+      const blind = unread(ctx, ctx.namespace, dropCapability);
+      if (blind !== undefined) throw deny(blind);
       const { dataset } = args;
       const row = isCreate ? null : await lockedRow('FieldProposal', params.id, dataset);
       if (dataset === undefined || (!isCreate && row === null)) {
@@ -597,6 +612,8 @@ export function gateNamespaceProposalLiveness(
           installsNamespace(row) &&
           (after === undefined || !installsNamespace(after) || to !== from);
         if (leaves && typeof from === 'string' && !holds(from)) {
+          const blind = unread(ctx, from, dropCapability);
+          if (blind !== undefined) throw deny(from, blind);
           const why = await namespaceRows(store, from, dataset);
           if (why !== undefined) {
             throw deny(
