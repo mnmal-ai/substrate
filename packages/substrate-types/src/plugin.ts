@@ -952,6 +952,12 @@ export interface KernelRouteClaim {
    * capability would get no auth wrapper at all.
    */
   capability: 'read' | 'mutate' | 'admin' | 'public';
+  /**
+   * `'body'` when the route acts on the namespace its JSON body's `namespace`
+   * names. With capability `'admin'`, the host then requires admin in that
+   * namespace, not merely in some namespace.
+   */
+  targetNamespace?: 'body';
 }
 
 /** Top-level MCP tool registration. */

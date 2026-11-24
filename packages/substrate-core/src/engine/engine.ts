@@ -712,6 +712,11 @@ export class Engine implements ActHandle {
     if (!nsGate.ok) {
       return { allow: false, reason: grantRefusal(ns, nsGate) };
     }
+    // Where auth is on, the mutate route admits no caller without an identity,
+    // whatever the mode; a probe has no route gate in front of it.
+    if (operation === 'mutate' && identity === null && probe?.authEnabled === true) {
+      return { allow: false, reason: 'a write needs an identity' };
+    }
     const ctx: RequestContext = {
       now: probe?.now ?? new Date(),
       headers: probe?.headers ?? {},

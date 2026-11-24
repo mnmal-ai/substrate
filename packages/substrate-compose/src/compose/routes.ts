@@ -53,6 +53,7 @@ import { registerStreamRoutes } from '../routes/stream-routes.js';
 import { whoamiRoute } from '../routes/whoami.js';
 import {
   type Capability,
+  withAdminInBodyNamespace,
   wrapPluginRouter,
   wrapPluginRouterWithSystemActor
 } from './auth-middleware.js';
@@ -294,28 +295,8 @@ export async function registerCoreRoutes(args: CoreRoutesArgs): Promise<{
   // The `'admin'` gate asks whether admin is held ANYWHERE; these four act on
   // the namespace named in the body, so admin must be held in THAT namespace.
   const adminCap = adminCapability ?? 'admin';
-  const adminInTarget =
-    (handler: HttpHandler): HttpHandler =>
-    async (req) => {
-      if (auth === undefined) return handler(req);
-      let ns: unknown;
-      try {
-        ns = (JSON.parse(req.body?.toString('utf8') ?? '') as { namespace?: unknown }).namespace;
-      } catch {
-        return handler(req); // the handler owns the malformed-body answer
-      }
-      if (typeof ns !== 'string') return handler(req);
-      const held = grantedIn(grantOf(req.identity ?? null), ns);
-      if (held.includes(adminCap)) return handler(req);
-      return {
-        status: 403,
-        headers: { 'content-type': 'application/json' },
-        body: Buffer.from(
-          JSON.stringify({ code: 'forbidden', required: `${ns}:${adminCap}` }),
-          'utf8'
-        )
-      };
-    };
+  const adminInTarget = (handler: HttpHandler): HttpHandler =>
+    auth === undefined ? handler : withAdminInBodyNamespace(handler, adminCap);
   // A store-wide action needs admin held store-wide: the `'*'` entry itself, not admin in some namespace.
   const adminStoreWide =
     (handler: HttpHandler): HttpHandler =>
