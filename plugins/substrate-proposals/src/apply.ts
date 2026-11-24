@@ -360,6 +360,9 @@ function reinstallType(
 ): void {
   const existing = registry.get(typeName);
   if (!existing) throw new Error(`type '${typeName}' not registered`);
+  // A mutation shares the registry with types; reinstalling over one would
+  // replace it with a type entry.
+  if (existing.kind !== 'type') throw new Error(`'${typeName}' is not a type`);
   const replaceWriter = {
     register: (
       key: Parameters<typeof registry.replace>[0],

@@ -207,6 +207,22 @@ async function swallowDryRun(work: Promise<unknown>): Promise<SubstrateResponse 
 }
 
 /**
+ * A `_system_*` namespace holds a plugin's control records for every
+ * namespace, each gated on its own namespace's admin. Dropping from it removes
+ * them all at once, so it needs admin held store-wide.
+ */
+function controlPlaneRefusal(
+  deps: DropRouteDeps,
+  req: Parameters<HttpHandler>[0],
+  namespace: string
+): SubstrateResponse | null {
+  if (deps.holds === undefined || !namespace.startsWith(`${SYSTEM_NAMESPACE}_`)) return null;
+  const adminCap = deps.adminCapability ?? 'admin';
+  if (deps.holds(req, '*', adminCap)) return null;
+  return jsonResponse(403, { code: 'forbidden', required: `*:${adminCap}` });
+}
+
+/**
  * The edge checks a drop runs before it commits. Under cascade=delete, the
  * caller must hold admin in every other namespace whose edges would go;
  * `authorise` receives those namespaces, and the edge delete is limited to
@@ -382,6 +398,8 @@ export function dropNamespaceRoute(deps: DropNamespaceRouteDeps): HttpHandler {
         message: '_system cannot be dropped'
       });
     }
+    const controlRefusal = controlPlaneRefusal(deps, req, namespace);
+    if (controlRefusal !== null) return controlRefusal;
     if (confirm !== namespace)
       return badRequest('confirm_mismatch', 'confirm must equal namespace');
 
@@ -524,6 +542,8 @@ export function dropTypeRoute(deps: DropRouteDeps): HttpHandler {
         message: '_system types cannot be dropped'
       });
     }
+    const controlRefusal = controlPlaneRefusal(deps, req, namespace);
+    if (controlRefusal !== null) return controlRefusal;
     const expectedConfirm = `${namespace}/${type}`;
     if (confirm !== expectedConfirm) {
       return badRequest('confirm_mismatch', `confirm must equal "${expectedConfirm}"`);
