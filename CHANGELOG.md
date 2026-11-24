@@ -2,6 +2,37 @@
 
 Releases before 1.0.0-alpha.21 are recorded only in their GitHub release notes.
 
+## 1.0.0-beta.15 (2026-11-24)
+
+Changes since 1.0.0-beta.14. This release closes the findings of a second security audit pass, over the surfaces the first pass left unexamined. No schema version moves and there is no migration. The `lean` MCP preset is unchanged. Several requests that used to be answered are now refused or answered differently; they are listed under *Changed* first.
+
+### Changed
+
+- **A write or reference to a row the caller cannot see answers as one to a missing row (#326).** `update<T>` on a row hidden by a `row()` policy answers `not_found`; it returned null. A batch update that names a hidden row is refused as a whole, as one naming a missing row is; it used to skip that element and apply the rest. A crossRef to a hidden row answers `missing_referent`, by id or short id.
+- **A subscription's `where` is capped (#327).** At most 64 predicates and 1,000 values in one list; past either it answers `invalid_logical`. One type holds at most 1,024 open subscriptions across all callers; past that a subscribe answers `too_many_subscriptions` and the server emits `engine_subscription_type_full`. Query `where` is unchanged.
+- **A `where` takes at most four extension-operator clauses (#324).** Past that it answers `invalid_logical`.
+- **A sealed cursor belongs to the read it came from (#325).** Sent with a different `where`, `orderBy`, type or caller it answers `invalid_cursor`. Resending the frame that produced it works as before, in any key order.
+- **A write by filter counts only rows the caller can see (#325).** Under a row policy, `updateMany` and `deleteMany` read all of their matches and answer `filter_too_broad` only when more than `maxMatch` visible rows match.
+- **`backfill-field` and `normalise-vocab` on a `_system_*` namespace need admin in every namespace (#324).** Admin in that namespace alone answers `403` with `required: '*:admin'`, as the drop routes already did. Kernel route claims with `targetNamespace: 'body'` follow the same rule.
+- **`POST /substrate/v1/_system/register` refuses a key name with control characters or line breaks (#324).** It answers `400 invalid_key_name`.
+- **Recall `embed-stats` is scoped to the caller (#325).** A caller who does not read every namespace sees its own namespaces' types and no failing row, and `?coverage=true` answers `403`.
+- **A recall cluster's medoid label can be an empty string (#324).** `ClusterStore` gains `clearMedoidLabels(clusterIds)`; an implementation outside this repository needs to add it.
+
+### Fixed
+
+- **A proposed type cannot take another type's generated mutations (#324).** A type whose name differs from a registered one only in the case of its first letter generates the same operation keys. Installing it left a half-registered entry that boot replay then used to replace the other type's mutations. The proposal now answers `type_already_exists` before anything is registered.
+- **A cursor no longer discloses a hidden row's sort value (#325).** Under a row filter a full page could hand back a cursor positioned on a row the caller cannot see. A full page's cursor now ends at the last row the caller was shown.
+- **A write-by-filter refusal no longer says whether a hidden row matched (#325).** `filter_too_broad` was decided on the raw match count, before the row filter ran.
+- **A delete of a hidden row validates like a delete of a missing one (#325).** An unknown param answered `deleted: false` for a hidden row and `unknown_param` for a missing one.
+- **Recall clusters (#324).** A cluster with no membership rows is no longer visible; it was readable and relabelable by any recall reader. A label copied from a member row is emptied when a member's row is gone and when the cluster retires. An agent's label stays.
+- **The engine releases every key when it ends a subscription (#324).** A multi-key subscribe ended on one overloaded key left its other keys registered.
+- **Operator commands print supplied text as data (#324).** `substrate-admin list`, `check-enums` and `normalise-vocab` printed key names and stored values raw, so a line break forged a row and escape bytes reached the terminal. `federate join` prints no env lines when a value holds a single quote.
+- **The `_system` key and invite routes answer a grant refusal with `403` (#327).** A caller whose admin grant is in another namespace got a `500`.
+
+### Internal
+
+- The engine is split into one module per concern (#323), and a table-driven test checks every route against six kinds of caller and fails on a route nobody classified (#322).
+
 ## 1.0.0-beta.14 (2026-11-23)
 
 Changes since 1.0.0-beta.13. This release closes the findings of a security audit of the repository. No schema version moves and there is no migration. The `lean` MCP preset is unchanged. Several requests that used to be answered are now refused; they are listed under *Changed* first.
