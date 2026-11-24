@@ -11,6 +11,9 @@ export function assertActionGraph(namespaces: ReadonlyMap<string, NamespaceConfi
     for (const [type, entry] of cfg.registry.all()) {
       for (const [name, decl] of Object.entries(entry.actions ?? {})) {
         actions.set(`${ns}/${type}.${name}`, decl);
+        if (decl.mutation !== undefined && cfg.registry.get(decl.mutation)?.kind !== 'mutation') {
+          throw new Error(`${ns}/${type}.${name}: '${decl.mutation}' is not a mutation of '${ns}'`);
+        }
       }
     }
   }

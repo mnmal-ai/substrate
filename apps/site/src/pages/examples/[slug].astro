@@ -341,6 +341,38 @@ const href = (slug: string) => pageHref(import.meta.env.BASE_URL, slug);
     background: var(--accent);
   }
 
+  /* A measured comparison: figures right-aligned in tabular digits, ruled rows, no box. */
+  .prose :global(table) {
+    width: 100%;
+    border-collapse: collapse;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .prose :global(th),
+  .prose :global(td) {
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--rule);
+    text-align: right;
+    white-space: nowrap;
+  }
+
+  .prose :global(th:first-child),
+  .prose :global(td:first-child) {
+    padding-left: 0;
+    text-align: left;
+    white-space: normal;
+  }
+
+  .prose :global(th) {
+    color: var(--text);
+    font-weight: 600;
+  }
+
+  .prose :global(td:last-child) {
+    padding-right: 0;
+    color: var(--accent);
+  }
+
   .run {
     display: flex;
     flex-direction: column;

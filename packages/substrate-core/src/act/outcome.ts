@@ -6,6 +6,7 @@
 
 import { createHash, randomBytes } from 'node:crypto';
 import type {
+  ActLate,
   ActMode,
   ActPlan,
   ActPlanStep,
@@ -71,10 +72,19 @@ export function stepOutcome(
     const hasMore = envelope._pagination?.[step.key]?.hasMore === true;
     return { ...base, rows, truncated: hasMore || rows.length < all.length };
   }
-  const row = data as Row | null | undefined;
-  if (row === null || row === undefined) return { ...base, touched: [] };
-  const shortId = typeof row.shortId === 'number' ? { shortId: row.shortId } : {};
-  return { ...base, touched: [{ id: String(row.id), ...shortId }] };
+  // A custom mutation may answer with several rows, or with nothing that has an id.
+  const rows = (Array.isArray(data) ? data : [data]) as Array<Row | null | undefined>;
+  const touched = rows.flatMap((row) =>
+    row === null || typeof row !== 'object' || row.id === undefined || row.id === null
+      ? []
+      : [
+          {
+            id: String(row.id),
+            ...(typeof row.shortId === 'number' ? { shortId: row.shortId } : {})
+          }
+        ]
+  );
+  return { ...base, touched };
 }
 
 /** The `find` outcomes for a reply's `found`: none when there are none, or more than `MAX_INLINE_ROWS` rows. */
@@ -93,6 +103,13 @@ const toValue = (v: unknown): ActValue =>
         ? String(v)
         : JSON.stringify(v);
 
+/** A late value as a sketch writes it: `$name`, `now`, `#N` or `field:value`. */
+function lateText(l: ActLate): string {
+  if ('bind' in l) return `$${l.bind}`;
+  if ('now' in l) return 'now';
+  return 'shortId' in l.ref ? `#${l.ref.shortId}` : `${l.ref.field}:${String(l.ref.value)}`;
+}
+
 /**
  * One plan step as sketch text with every value it sends: `close work/Todo
  * id=1 status=closed`. A read shows its filter, and a `find` its fields; a
@@ -109,7 +126,7 @@ export function planLine(step: ActPlanStep): string {
     for (const [k, v] of Object.entries(step.params)) args[k] = toValue(v);
   }
   const late = Object.entries(step.late ?? {}).map(
-    ([k, l]) => `${k}=${'bind' in l ? `$${l.bind}` : 'now' in l ? 'now' : `#${l.ref.shortId}`}`
+    ([k, l]) => `${k.startsWith('where.') ? k.slice(6) : k}=${lateText(l)}`
   );
   return [formatStep({ action: step.action, type: step.type, args }), ...late].join(' ');
 }

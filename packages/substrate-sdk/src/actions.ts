@@ -18,7 +18,9 @@ const FIELD_KINDS: readonly string[] = ['scalar', 'crossRef', 'struct', 'list'];
 export function assertTypeActions(typeName: string, input: TypeInput): void {
   const actions = input.actions;
   if (actions === undefined || Object.keys(actions).length === 0) return;
-  if (input.autoCrud === false) throw new Error(`${typeName}: actions need autoCRUD`);
+  if (input.autoCrud === false && Object.values(actions).some((a) => a.mutation === undefined)) {
+    throw new Error(`${typeName}: actions need autoCRUD, or a mutation of their own`);
+  }
   const fields: Record<string, FieldDef> = { ...input.fields, ...RESERVED_AUTOCRUD_FIELDS };
   for (const [name, decl] of Object.entries(actions)) {
     assertAction(typeName, name, decl, fields);
@@ -47,6 +49,15 @@ function assertAction(
   }
 
   for (const [field, value] of Object.entries(set)) {
+    if (decl.mutation !== undefined) {
+      // The keys are the mutation's params, which the engine checks when it runs.
+      if (isParamRef(value)) {
+        const param = params[value.param];
+        if (param === undefined) fail(`set uses undeclared param '${value.param}'`);
+        used.add(value.param);
+      }
+      continue;
+    }
     const def = fields[field];
     if (def === undefined) fail(`set field '${field}' is not a field of ${typeName}`);
     if (def.kind === 'scalar' && (def.readonly === true || def.serverSet !== undefined)) {
@@ -80,6 +91,7 @@ function assertAction(
     if (!used.has(param)) fail(`param '${param}' is never used`);
   }
 
+  if (decl.mutation !== undefined) return;
   if ((decl.kind ?? 'update') === 'update') {
     if (Object.keys(set).length === 0 && then.length === 0) fail(`action '${name}' does nothing`);
     return;

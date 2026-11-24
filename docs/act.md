@@ -88,16 +88,17 @@ defineNamespace('work', {
 - `params` use field types, so values are coerced and checked as fields are: enums, and int64 kept exact. A param with a `default` or `optional: true` may be left out. A `list` param takes record references.
 - `then` runs follow-on actions in the same transaction, once per element of the list param its `each` names; `each` is required. The target is written `<namespace>/<Type>.<action>`, must be an update action on the list param's type whose params are all optional or defaulted, and may be in another namespace on the same store.
 - `past` is the word the acknowledgement uses. Without it the ack says `<action> done`.
+- `mutation` names one of the namespace's own mutations to call in place of the generated `create<Type>` or `update<Type>`. It is for a type whose writes are its plugin's mutations, such as a mailbox with `send` and `ack`. An `update` action passes the reference as `id`, a `create` action takes none, and every `field=value` in the sketch is one of that mutation's params, coerced as its declared type. `ack: { mutation: 'ackMessage', past: 'acked' }` makes `ack Message #12` call `ackMessage` with that id. Such an action needs no `set`, and its type may have `autoCrud: false`.
 
 Boot refuses with a message when:
 
-- an action name collides with a built-in, or the type has `autoCrud: false`;
+- an action name collides with a built-in, or the type has `autoCrud: false` and an action without a `mutation`;
 - a param has no field type, or is never used;
 - a `set` field does not exist or is server-set, a literal does not fit its field, `{ now: true }` sets a field that is not a date, or `{ param }` names a param that is undeclared or a `list`;
 - a `then` entry has no `each`, its `each` names a param that is not a `list`, or its target's type is not the list's type;
 - an update action sets nothing and has no `then`;
 - a `create` action leaves a required field without a `set` value, a param that is always present, or a field default;
-- once every namespace has installed, a `then` target does not exist, is a create action, or has a param with no default, or `then` chains form a cycle.
+- once every namespace has installed, a `then` target does not exist, is a create action, or has a param with no default, or `then` chains form a cycle, or a `mutation` is not a mutation of the type's namespace.
 
 A composite action grants nothing. Every step goes through its target's normal grant and policy with the caller's identity, so an action cannot write what the caller could not write directly.
 
@@ -169,6 +170,7 @@ A sketch is text, or the same thing as JSON (`ActStep[]`). Steps are separated b
 - **Values.** Bare words, double-quoted strings, numbers, `true`, `false`, `null`, and lists, written `a,b` or in brackets (`[a,b]`, `[a]`, `[]`), coerced by the field or param type. A quoted value may contain `;`, a newline, `=`, `#` and `,`, and stays one value. Inside quotes, `\"`, `\\` and `\n` are escapes.
 - **Extra fields.** A sketch may pass `field=value` beyond an action's params, for example `close Todo #12 title="Done early"`. Each must name a field of the type that the action's `set` does not fix. Naming a fixed field, such as `close Todo #12 archived=false`, is refused, so no sketch can undo what the action guarantees. No write takes an `id` arg: the id comes from the reference.
 - **Bindings.** `create Todo title="x" as $t` names the record for later steps of the same sketch. `$t` resolves where a record reference goes: as a step's reference (`update Todo $t priority=high`), in a `list` param, and as the value of a crossRef field (`create Note todo=$t`). A crossRef field also takes `#12`. In any other field a binding is plain text: `title=$t` writes `$t`. A list of crossRefs takes full ids only.
+- **Records by a field, and the caller.** Where a crossRef takes a value, `field:value` names the one record of the referenced type whose `field` holds `value`: `find AgentMessage recipient=kid:alice@host`, or `create Note todo=title:Launch`. The lookup runs as the caller when the step runs. No match fails the sketch with `not_found`, and more than one with `ambiguous_reference`. A value whose prefix names no scalar field of that type is taken as an id. `@me` stands for the caller's identity id, alone or as a lookup's value, so `find AgentMessage recipient=kid:@me status=unread` is the caller's inbox. A lookup is one value, not a list.
 - **`find` and `count`.** They filter on `field=value` pairs and add no hidden filters, so what you see is what runs. A `find` row holds `id`, `shortId` and the fields `fields=a,b` names, in the reply and in the result record. Each `find` reads at most the server's page maximum (1000 by default), the result record keeps at most 1000 rows across all its `find` steps, and the ack says when either truncated. `count` needs a store that answers aggregate reads (Postgres). A plain memory store refuses `count` exactly as `query` does.
 - **Help.** `?` lists the readable types by namespace with their action names. `? Todo` shows that type's actions with their params, and its fields. Several help steps may share a sketch, `? Todo; ? Note`, and the help is then a list in step order. Help may also share a sketch with other steps, `? Todo; find Todo #12 fields=status`: the reply carries `help` beside the usual ack and `found`, and the help is computed before any step runs. A sketch of help alone writes no result record.
 
