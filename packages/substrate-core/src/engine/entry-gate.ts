@@ -478,9 +478,12 @@ export class EntryGate {
       this.#metric('engine_mutation_on_query', { key });
       return null;
     }
+    // An update or delete answers with the row, or with whether and which rows
+    // matched, so it reads. A create returns only what its caller sent.
+    const readsBack = registryEntry.verb === 'update' || registryEntry.verb === 'delete';
     if (
       operation === 'mutate' &&
-      reads &&
+      (reads || readsBack) &&
       this.refuseUngranted(envelope, key, ns, ctxBase.identity, 'query')
     )
       return null;
@@ -637,11 +640,12 @@ export class EntryGate {
 
     const cursor = args.params?.cursor;
     if (typeof cursor === 'string') {
-      // Under a row filter only a sealed cursor is accepted: that is all this
-      // entry ever hands out. It opens only for the read and caller it was sealed for.
+      // A read hands out a sealed cursor under a row filter and a plain one
+      // otherwise, and takes back only the kind it hands out. A sealed cursor
+      // opens only for the read and caller it was sealed for.
       const filtering = (decision.obligations?.length ?? 0) > 0;
       const opened =
-        filtering && !isSealedCursor(cursor)
+        filtering !== isSealedCursor(cursor)
           ? null
           : openCursor(cursor, cursorBinding(key, frame.params, ctx.identity?.id));
       if (opened === null) {

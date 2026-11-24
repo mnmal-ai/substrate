@@ -19,6 +19,12 @@ export interface SelectorScope {
 /**
  * Drop rows whose `body->>field` starts with `prefix`.
  */
+import { ROW_FILTER_FIELD } from './embeddings-store.js';
+
+/** Bounds on `select.excludeTextPrefixes`, which becomes SQL predicates. */
+const MAX_TEXT_PREFIX_EXCLUSIONS = 32;
+const MAX_TEXT_PREFIX_LENGTH = 256;
+
 export interface TextPrefixExclusion {
   field: string;
   prefix: string;
@@ -95,16 +101,21 @@ export function validateSelector(value: unknown): CandidateSelector {
     if (!Array.isArray(raw.excludeTextPrefixes)) {
       bad('"select.excludeTextPrefixes" must be an array of { field, prefix }');
     }
+    if (raw.excludeTextPrefixes.length > MAX_TEXT_PREFIX_EXCLUSIONS) {
+      bad(`"select.excludeTextPrefixes" takes at most ${MAX_TEXT_PREFIX_EXCLUSIONS} entries`);
+    }
     excludeTextPrefixes = raw.excludeTextPrefixes.map((entry, i) => {
       const e = entry as Record<string, unknown> | null;
       if (e === null || typeof e !== 'object') {
         bad(`"select.excludeTextPrefixes[${i}]" must be an object`);
       }
-      if (!nonEmptyString(e.field)) {
-        bad(`"select.excludeTextPrefixes[${i}].field" must be a non-empty string`);
+      if (!nonEmptyString(e.field) || !ROW_FILTER_FIELD.test(e.field)) {
+        bad(`"select.excludeTextPrefixes[${i}].field" must be a plain field name`);
       }
-      if (!nonEmptyString(e.prefix)) {
-        bad(`"select.excludeTextPrefixes[${i}].prefix" must be a non-empty string`);
+      if (!nonEmptyString(e.prefix) || e.prefix.length > MAX_TEXT_PREFIX_LENGTH) {
+        bad(
+          `"select.excludeTextPrefixes[${i}].prefix" must be a non-empty string of at most ${MAX_TEXT_PREFIX_LENGTH} characters`
+        );
       }
       return { field: e.field, prefix: e.prefix };
     });

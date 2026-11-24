@@ -73,11 +73,18 @@ const invalid = (message: string, param: string): ProposalError =>
 const isObject = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v);
 
+/** The longest sketch a coined word's record keeps. */
+export const MAX_SKETCH_LENGTH = 2000;
+
 function parseInput(params: Record<string, unknown>): Input {
   for (const key of ['namespace', 'type', 'name', 'sketch']) {
     if (typeof params[key] !== 'string') throw invalid(`'${key}' must be a string`, key);
   }
   const { namespace, type, name, sketch, decl } = params as unknown as Input;
+  // The sketch is stored with the word and shown to whoever reads its record.
+  if (sketch.length > MAX_SKETCH_LENGTH) {
+    throw invalid(`'sketch' is at most ${MAX_SKETCH_LENGTH} characters`, 'sketch');
+  }
   if (!WORD.test(name) || UNSAFE.has(name)) {
     throw invalid(`action name must match ${WORD.source}, and not be '${name}'`, 'name');
   }

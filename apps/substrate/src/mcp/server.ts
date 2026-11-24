@@ -942,7 +942,9 @@ export function createMcpServer(endpoint: string, options: McpServerOptions = {}
           confirm: z
             .string()
             .min(1)
-            .describe('Must equal `namespace` exactly (confirmation gate).'),
+            .describe(
+              'Must equal `namespace` exactly. It guards against a mistyped name; it is not a confirmation by a person.'
+            ),
           dryRun: z
             .boolean()
             .optional()
@@ -971,7 +973,9 @@ export function createMcpServer(endpoint: string, options: McpServerOptions = {}
           confirm: z
             .string()
             .min(1)
-            .describe('Must equal "<namespace>/<type>" exactly (confirmation gate).'),
+            .describe(
+              'Must equal "<namespace>/<type>" exactly. It guards against a mistyped name; it is not a confirmation by a person.'
+            ),
           dryRun: z
             .boolean()
             .optional()
@@ -1058,13 +1062,26 @@ export function createMcpServer(endpoint: string, options: McpServerOptions = {}
   );
   for (const t of TOOLS) {
     if (!allowed.has(t.name)) continue;
+    // Only a tool that changes nothing says so. Every other tool keeps the
+    // protocol's default, which a host reads as able to overwrite or delete.
+    const config = READ_ONLY_TOOLS.has(t.name)
+      ? { ...t.config, annotations: { readOnlyHint: true } }
+      : t.config;
     // biome-ignore lint/suspicious/noExplicitAny: config.inputSchema varies per tool
-    server.registerTool(t.name, t.config as any, t.handler);
+    server.registerTool(t.name, config as any, t.handler);
   }
 
   return server;
 }
 
+/** Tools that change nothing, for a host that asks before a write. */
+const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
+  'schema',
+  'query',
+  'ask',
+  'whoami',
+  'recall'
+]);
 /** The tools a worker agent needs; the admin tools and `ask` are opt-in. */
 export const CORE_TOOLS: readonly string[] = [
   'query',
