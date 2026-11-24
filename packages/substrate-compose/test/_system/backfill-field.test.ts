@@ -50,12 +50,16 @@ describe('backfillFieldRoute', () => {
   let ns: MemoryDataset;
   let substrate: MemoryDataset;
   let handler: HttpHandler;
+  let announced: string[];
+  let storeAdmin: boolean;
   const past = new Date('2026-01-01T00:00:00Z');
   const base = { namespace: 'journal', type: 'Todo', field: 'resolution' };
   const meta = async (id: string) =>
     (await ns.read('Todo', { id })).rows[0]?._metadata as { updatedAt?: string } | undefined;
 
   beforeEach(async () => {
+    announced = [];
+    storeAdmin = false;
     ns = new MemoryDataset({ namespace: 'journal' });
     substrate = new MemoryDataset({ namespace: SYSTEM_NAMESPACE });
     await ns.write(
@@ -71,8 +75,24 @@ describe('backfillFieldRoute', () => {
       resolveDataset: (n) => (n === 'journal' ? ns : n === SYSTEM_NAMESPACE ? substrate : null),
       schemaFor: (n) => (n === 'journal' ? schema : null),
       now: () => new Date('2026-10-03T12:00:00Z'),
-      trustedProxies: []
+      trustedProxies: [],
+      storeAdmin: () => storeAdmin,
+      announce: async (events) => void announced.push(...events.map((e) => String(e.id)))
     });
+  });
+
+  it('announces the rows it wrote', async () => {
+    await handler(req({ ...base, apply: true, values: { a: 'shipped', c: 'completed' } }));
+    expect(announced).toEqual(['a']);
+  });
+
+  it('edits proposal records only for a caller with admin everywhere', async () => {
+    const res = await handler(req({ ...base, type: 'TypeProposal', values: { a: 'x' } }));
+    expect(res.status).toBe(403);
+    expect(json(res)).toEqual({ code: 'forbidden', required: '*:admin' });
+    storeAdmin = true;
+    const ok = await handler(req({ ...base, type: 'TypeProposal', values: { a: 'x' } }));
+    expect(ok.status).not.toBe(403);
   });
 
   it('dry-runs by default: counts, missing ids and kept values, nothing written', async () => {

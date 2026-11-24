@@ -12,15 +12,17 @@
  */
 
 import type {
+  ActorIdentity,
   Dataset,
   FieldDef,
   HttpHandler,
   Schema,
-  SubstrateResponse
+  SubstrateResponse,
+  WriteEvent
 } from '@mnmal-ai/substrate-types';
 import { canonicalVocabValue } from '@mnmal-ai/substrate-types';
 import { extractClientIp, jsonResponse } from '../routes/helpers.js';
-import { AUDIT_ID_LIMIT } from './backfill-field.js';
+import { AUDIT_ID_LIMIT, PROPOSAL_RECORD_TYPES } from './backfill-field.js';
 import { buildAuditRow } from './install.js';
 import { AUDIT_EVENT_TYPE, SYSTEM_NAMESPACE } from './types.js';
 import { migrateFieldValues, scanNonconforming, type ValueMap } from './value-map-migration.js';
@@ -30,6 +32,10 @@ export interface NormaliseVocabRouteDeps {
   schemaFor: (namespace: string) => Schema | null;
   now: () => Date;
   trustedProxies: string[] | Set<string>;
+  /** Whether the caller holds admin in every namespace. Absent, proposal records are refused. */
+  storeAdmin?: (req: Parameters<HttpHandler>[0]) => boolean;
+  /** Tells subscribers and write hooks of the rows once they are committed. */
+  announce?: (events: WriteEvent[], actor: ActorIdentity) => Promise<void>;
 }
 
 const badRequest = (code: string, message: string): SubstrateResponse =>
@@ -57,6 +63,9 @@ export function normaliseVocabRoute(deps: NormaliseVocabRouteDeps): HttpHandler 
         code: 'forbidden_namespace',
         message: '_system cannot be normalised'
       });
+    }
+    if (PROPOSAL_RECORD_TYPES.has(type) && deps.storeAdmin?.(req) !== true) {
+      return jsonResponse(403, { code: 'forbidden', required: '*:admin' });
     }
     const apply = body.apply === true;
 
@@ -123,16 +132,28 @@ export function normaliseVocabRoute(deps: NormaliseVocabRouteDeps): HttpHandler 
       ...unmapped.map((u) => [u.value, null] as const)
     ]);
     // A non-strict field admits unknown values, so they are not offenders here.
-    const result = await migrateFieldValues(
-      { dataset, namespace, type, field, vocabulary: [...vocabulary, ...admitted] },
-      valueMap,
-      { oldVocabulary: strict ? vocabulary : null, preserveMetadata: true }
+    // One transaction: every alias is rewritten, or none is.
+    const result = await dataset.withTransaction((tx) =>
+      migrateFieldValues(
+        { dataset: tx, namespace, type, field, vocabulary: [...vocabulary, ...admitted] },
+        valueMap,
+        { oldVocabulary: strict ? vocabulary : null, preserveMetadata: true }
+      )
     );
 
     const byValue = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
     const migrated = [...result.migrated].sort((a, b) => byValue(a.from, b.from));
     const stranded = [...result.stranded].sort((a, b) => byValue(a.value, b.value));
     const actorKid = typeof req.identity?.kid === 'string' ? req.identity.kid : 'unknown';
+    if (deps.announce !== undefined) {
+      for (let i = 0; i < result.ids.length; i += 200) {
+        const { rows } = await dataset.read(type, { ids: result.ids.slice(i, i + 200) });
+        await deps.announce(
+          rows.map((row) => ({ ns: namespace, type, id: row.id, operation: 'update', row })),
+          { kind: 'agent', id: actorKid }
+        );
+      }
+    }
     const now = deps.now();
     const substrateDs = deps.resolveDataset(SYSTEM_NAMESPACE);
     if (substrateDs !== null && migrated.length > 0) {
