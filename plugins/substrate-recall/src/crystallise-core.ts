@@ -22,6 +22,7 @@ import type { PolicyDecision } from '@mnmal-ai/substrate-types';
 import { type Candidate, type CandidateSelector, validateSelector } from './candidate-selection.js';
 import {
   type ClusterProvenance,
+  type ClusterRecord,
   type ClusterStore,
   type MemberRef,
   memberKey,
@@ -407,6 +408,33 @@ export async function handleCrystallise(
 }
 
 /**
+ * The clusters whose every live member sits in a scope the caller reads with
+ * no row filter. A centroid, a label and a member count all derive from the
+ * members, so a cluster holding one the caller cannot read is not a target.
+ * With no read policy wired, every cluster.
+ */
+async function readableClusters(
+  clusters: readonly ClusterRecord[],
+  deps: CrystalliseCoreDeps
+): Promise<readonly ClusterRecord[]> {
+  const check = deps.checkReadPolicy;
+  if (check === undefined || clusters.length === 0) return clusters;
+  const scopes = new Map<string, boolean>();
+  const hidden = new Set<string>();
+  for (const m of await deps.clusters.listMembers(clusters.map((c) => c.id))) {
+    const scope = `${m.memberNs}/${m.memberType}`;
+    let readable = scopes.get(scope);
+    if (readable === undefined) {
+      const decision = check(m.memberNs, m.memberType);
+      readable = decision.allow && (decision.obligations?.length ?? 0) === 0;
+      scopes.set(scope, readable);
+    }
+    if (!readable) hidden.add(m.clusterId);
+  }
+  return clusters.filter((c) => !hidden.has(c.id));
+}
+
+/**
  * Attach unclaimed rows to the nearest live centroid within the threshold.
  *
  * Never runs the clusterer, never touches an existing membership, and never
@@ -419,7 +447,7 @@ async function accrete(
   stamp: Date,
   newId: () => string
 ): Promise<CrystalliseOutput> {
-  const live = await deps.clusters.listClusters();
+  const live = await readableClusters(await deps.clusters.listClusters(), deps);
   if (live.length === 0) return empty;
 
   const attachments: NewMember[] = [];
