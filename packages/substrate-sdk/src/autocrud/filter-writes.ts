@@ -198,8 +198,6 @@ export function deleteManyResolver(
 
 /** Rows per read while a policy's matches are gathered. */
 const POLICY_SCAN_PAGE = 1000;
-/** Matches a row filter may hide from the caller before a write by filter is refused. */
-const POLICY_SCAN_HIDDEN = 5000;
 
 /**
  * The matched rows a policy lets the caller write: the matches are read in
@@ -217,10 +215,11 @@ async function policyKept(
   maxMatch: number,
   set: Record<string, unknown>
 ): Promise<Row[]> {
-  // Only rows the caller may see count towards `maxMatch`: a refusal that
-  // counted hidden rows would say whether one matches `where`.
+  // Only rows the caller may see count towards `maxMatch`, and nothing here
+  // depends on how many are hidden: a refusal that counted hidden rows would
+  // say whether one matches `where`. So every match is read, as a query whose
+  // `where` no index serves reads its type.
   const kept: Row[] = [];
-  let hidden = 0;
   let cursor: string | undefined;
   do {
     const page = await ds.read(typeName, {
@@ -242,9 +241,6 @@ async function policyKept(
       if (applyRowFilters(decision, [row], ctx).length > 0) {
         kept.push(row);
         if (kept.length > maxMatch) throw filterTooBroad(ds.namespace, typeName, maxMatch);
-        // shortcut: past POLICY_SCAN_HIDDEN hidden matches the write is refused, which says that many exist; the caller's own rows cannot move that line. Compile row policies into the read's where to remove it.
-      } else if (++hidden > POLICY_SCAN_HIDDEN) {
-        throw filterTooBroad(ds.namespace, typeName, maxMatch);
       }
     }
     cursor = page.hasMore ? page.nextCursor : undefined;
