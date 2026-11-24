@@ -99,9 +99,23 @@ it('fills a page past hidden rows and never returns more than the limit', async 
   expect(second).toEqual({ ids: [6, 7], page: { hasMore: false } });
 });
 
+it('reads past a long run of hidden rows in a few chunks', async () => {
+  const hidden = Array.from({ length: 3000 }, (_, i) => theirs(i + 1));
+  const { read, reads } = build([...hidden, mine(3001), mine(3002)]);
+  // With limit 1 the run is far longer than ten pages; it is still crossed in one read.
+  const first = await read({ limit: 1 });
+  expect(first.ids).toEqual([3001]);
+  expect(first.page?.hasMore).toBe(true);
+  expect(reads()).toBeLessThan(25);
+  expect(await read({ limit: 1, cursor: first.page?.nextCursor })).toEqual({
+    ids: [3002],
+    page: { hasMore: false }
+  });
+});
+
 it('stops after a bounded scan of hidden rows and lets the caller page on', async () => {
-  const hidden = Array.from({ length: 500 }, (_, i) => theirs(i + 1));
-  const { read, reads } = build([...hidden, mine(501)]);
+  const hidden = Array.from({ length: 12_000 }, (_, i) => theirs(i + 1));
+  const { read, reads } = build([...hidden, mine(12_001)]);
   const first = await read({ limit: 2 });
   expect(first.ids).toEqual([]);
   expect(first.page?.hasMore).toBe(true);
@@ -110,10 +124,10 @@ it('stops after a bounded scan of hidden rows and lets the caller page on', asyn
   // Paging on from each cursor reaches the visible row in the end.
   let cursor = first.page?.nextCursor;
   let found: number[] = [];
-  for (let i = 0; i < 100 && cursor !== undefined && found.length === 0; i++) {
+  for (let i = 0; i < 10 && cursor !== undefined && found.length === 0; i++) {
     const next = await read({ limit: 2, cursor });
     found = next.ids;
     cursor = next.page?.hasMore ? next.page.nextCursor : undefined;
   }
-  expect(found).toEqual([501]);
+  expect(found).toEqual([12_001]);
 });

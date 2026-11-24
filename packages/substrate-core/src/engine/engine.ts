@@ -204,8 +204,10 @@ function bridgedWalk(entry: FrameEntry): boolean {
   );
 }
 
-/** How many reads' worth of rows a row-filtered page scans before it stops and hands back a cursor. */
-const ROW_FILTER_SCAN_FACTOR = 10;
+/** Rows a row-filtered page scans before it stops and hands back a cursor. */
+const ROW_FILTER_SCAN_ROWS = 5000;
+/** Rows it reads at a time while it looks past hidden ones. */
+const ROW_FILTER_CHUNK = 200;
 
 function slotResultOf(scratch: PackEnvelope, key: string): SlotResult {
   const entry: SlotResult = {};
@@ -1714,11 +1716,10 @@ export class Engine implements ActHandle {
 
   /**
    * A row-filtered page, built so that what it says about the rows after it
-   * depends only on rows the caller may see. Reads on past hidden rows until
-   * the page holds `limit` visible ones, asking each time for exactly what it
-   * still lacks, so it never overshoots and every cursor is a page end. Then
-   * reads ahead until it finds one more visible row, which is what `hasMore`
-   * reports.
+   * depends only on rows the caller may see. Reads on past hidden rows, a
+   * chunk at a time, until the page holds `limit` visible ones and one more
+   * has been seen: that one is what `hasMore` reports, and the next page
+   * starts just before it.
    */
   async #fillFilteredPage(
     first: ReadResult,
@@ -1727,40 +1728,51 @@ export class Engine implements ActHandle {
     limit: unknown
   ): Promise<ReadResult> {
     const want = typeof limit === 'number' && limit > 0 ? limit : Math.max(first.rows.length, 1);
-    // shortcut: scans at most ROW_FILTER_SCAN_FACTOR pages' worth of rows per read, then answers hasMore with a cursor so the caller pages on; a run of hidden rows longer than that still shows as empty pages, raise the factor if callers meet them.
-    const budget = ROW_FILTER_SCAN_FACTOR * (want + 1);
+    // shortcut: scans at most ROW_FILTER_SCAN_ROWS rows per read (ten pages' worth if that is more), then answers hasMore with a cursor so the caller pages on; a longer run of hidden rows still shows as empty pages, raise it if callers meet them.
+    const budget = Math.max(ROW_FILTER_SCAN_ROWS, 10 * (want + 1));
     const after = (r: ReadResult) => (r.hasMore ? r.nextCursor : undefined);
+    const page = async (cursor: string, n: number): Promise<ReadResult> => {
+      const r = await read(cursor, n);
+      return isReadResult(r) ? r : { rows: [], hasMore: false };
+    };
     const rows = visible(first.rows);
     let scanned = first.rows.length;
+    // Where the unread rows start; undefined at the end of the data.
     let cursor = after(first);
 
-    const next = async (n: number): Promise<Row[]> => {
-      const page = await read(cursor as string, n);
-      if (!isReadResult(page)) {
-        cursor = undefined;
-        return [];
+    while (cursor !== undefined && scanned < budget) {
+      const from = cursor;
+      const need = want - rows.length;
+      const chunk = await page(from, Math.max(need, ROW_FILTER_CHUNK));
+      scanned += chunk.rows.length;
+      const seen = visible(chunk.rows);
+      if (seen.length <= need && need > 0) {
+        rows.push(...seen);
+        cursor = after(chunk);
+        continue;
       }
-      scanned += page.rows.length;
-      cursor = after(page);
-      return visible(page.rows);
-    };
-
-    while (cursor !== undefined && rows.length < want && scanned < budget) {
-      rows.push(...(await next(want - rows.length)));
-    }
-    // The next page starts here, whatever the read-ahead below finds.
-    let resume = cursor;
-    let more = false;
-    while (cursor !== undefined && rows.length >= want && !more && scanned < budget) {
-      resume = cursor;
-      more = (await next(want)).length > 0;
+      if (seen.length === 0) {
+        cursor = after(chunk);
+        continue;
+      }
+      // A visible row past the page: the next page starts before it.
+      if (need === 0) return { rows, hasMore: true, nextCursor: from };
+      // The chunk holds more visible rows than the page lacks. Keep those it
+      // lacks, and re-read up to the last one kept for the cursor that ends there.
+      const kept = new Set(seen.slice(0, need));
+      const last = chunk.rows.findLastIndex((r) => kept.has(r));
+      rows.push(...seen.slice(0, need));
+      const end = after(await page(from, last + 1));
+      return {
+        rows,
+        hasMore: end !== undefined,
+        ...(end !== undefined ? { nextCursor: end } : {})
+      };
     }
     // Out of budget with rows unread: the caller pages on from where the scan stopped.
-    if (!more && cursor !== undefined) {
-      more = true;
-      resume = cursor;
-    }
-    return { rows, hasMore: more, ...(more && resume !== undefined ? { nextCursor: resume } : {}) };
+    return cursor === undefined
+      ? { rows, hasMore: false }
+      : { rows, hasMore: true, nextCursor: cursor };
   }
 
   /**
