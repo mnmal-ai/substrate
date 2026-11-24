@@ -1,6 +1,7 @@
 import { createClientFromEnv, type SubstrateClient } from '@mnmal-ai/substrate-client';
 import { type ActRequest, stringifyJson } from '@mnmal-ai/substrate-types';
 import { sanitise } from '@mnmal-ai/surface-core/pure';
+import { jsonForTerminal } from '../../terminal-text.js';
 
 export interface ActCliOptions {
   write?: (s: string) => void;
@@ -66,8 +67,7 @@ export async function runAct(argv: string[], options: ActCliOptions = {}): Promi
   }
 
   // JSON.stringify escapes C0 but not C1 controls (U+009B is a CSI to some terminals).
-  const asJson = (v: unknown): string =>
-    `${stringifyJson(v, 2).replace(/[\u0080-\u009f]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`)}\n`;
+  const asJson = (v: unknown): string => `${jsonForTerminal(stringifyJson(v, 2))}\n`;
   const line = (s: unknown): string => sanitise(String(s));
 
   try {

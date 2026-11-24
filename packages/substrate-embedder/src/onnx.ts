@@ -194,7 +194,7 @@ async function loadFastembed(): Promise<FastembedModule> {
   } catch (err) {
     throw new EmbedError(
       'unavailable',
-      "OnnxEmbedder requires 'fastembed' (^2.1.1), which is not installed. " +
+      "OnnxEmbedder requires 'fastembed' (^3.0.0), which is not installed. " +
         'Install it alongside @mnmal-ai/substrate-embedder (`pnpm add fastembed`), or use ' +
         'the ollama embedder instead. It is deliberately undeclared because it pulls ' +
         'onnxruntime-node (~520MB) and most deployments never use it.',

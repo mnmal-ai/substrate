@@ -86,7 +86,8 @@ export function makeProposeNamespaceResolver(
     const { ns } = input;
 
     // Step 1 — refuse the control-plane ns + malformed inputs
-    if (!isProposableNamespace(ns) || ns === deps.controlNamespace) {
+    // `_system*` is reserved: the drop routes refuse it, so such a namespace could not be removed.
+    if (!isProposableNamespace(ns) || ns === deps.controlNamespace || ns.startsWith('_system')) {
       throw new ProposalError(
         'invalid_namespace',
         `${JSON.stringify(ns)} cannot be proposed (reserved, or not matching [A-Za-z0-9_-]+)`

@@ -14,7 +14,7 @@
 import { createHash } from 'node:crypto';
 import { substrateFetch, tokenAudience } from '@mnmal-ai/substrate-client';
 import { trimTrailingSlashes } from '@mnmal-ai/substrate-types';
-import { oneLine } from '../../terminal-text.js';
+import { jsonForTerminal, oneLine } from '../../terminal-text.js';
 
 /**
  * Structural subset of `FieldDef` — only what drift detection reads. Kept
@@ -272,7 +272,7 @@ export async function runCheckEnums(
   }
 
   if (asJson) {
-    write(`${JSON.stringify(result, null, 2)}\n`);
+    write(`${jsonForTerminal(JSON.stringify(result, null, 2))}\n`);
     return drifted.length > 0 ? 1 : 0;
   }
 

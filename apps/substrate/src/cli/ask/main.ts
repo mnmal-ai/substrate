@@ -6,6 +6,7 @@ import {
 } from '@mnmal-ai/substrate-client';
 import type { Dropped, NlAggregate, NlOutcome, PlanClause } from '@mnmal-ai/substrate-types';
 import { sanitise } from '@mnmal-ai/surface-core/pure';
+import { jsonForTerminal } from '../../terminal-text.js';
 
 export interface AskCliOptions {
   write?: (s: string) => void;
@@ -85,10 +86,7 @@ export async function runAsk(argv: string[], options: AskCliOptions = {}): Promi
   }
   const outcome = result.outcome;
   // JSON.stringify escapes C0 but not C1 controls (U+009B is a CSI to some terminals).
-  if (json)
-    write(
-      `${JSON.stringify(result, null, 2).replace(/[\u0080-\u009f]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`)}\n`
-    );
+  if (json) write(`${jsonForTerminal(JSON.stringify(result, null, 2))}\n`);
   // Every server- or question-derived string reaches the terminal stripped of escapes, line by line.
   else write(render(outcome).split('\n').map(sanitise).join('\n'));
   if (outcome === null) return 0;

@@ -6,13 +6,22 @@
 import { describe, expect, it } from 'vitest';
 import { formatListOutput } from '../src/admin/commands/list.js';
 import { formatJoinOutput } from '../src/cli/federate/join.js';
-import { oneLine } from '../src/terminal-text.js';
+import { jsonForTerminal, oneLine } from '../src/terminal-text.js';
 
 const ESC = '\u001b';
 
 describe('oneLine', () => {
   it('drops escape and control bytes and joins lines', () => {
     expect(oneLine(`a${ESC}[2Jb\u0007\r\nc d`)).toBe('ab c d');
+  });
+});
+
+describe('jsonForTerminal', () => {
+  it('writes C1 control bytes as escapes and still parses to the same value', () => {
+    const value = { name: 'a\u009b2Jb\u0085c' };
+    const out = jsonForTerminal(JSON.stringify(value));
+    expect(out).toBe('{"name":"a\\u009b2Jb\\u0085c"}');
+    expect(JSON.parse(out)).toEqual(value);
   });
 });
 

@@ -177,20 +177,25 @@ describe('propose_namespace resolver', () => {
     ).resolves.toMatchObject({ errors: [expect.objectContaining({ code: 'invalid_namespace' })] });
   });
 
-  it.each(['a/b', 'a:b', ''])('rejects the malformed namespace name %j', async (ns) => {
-    const { engine } = await bootEngine();
-    await expect(
-      engine.mutate({
-        frame: {
-          '_system_proposals/propose_namespace': {
-            params: { ns, proposedReason: 'malformed' },
-            fields: { id: true }
-          }
-        },
-        ctx: makeCtx()
-      })
-    ).resolves.toMatchObject({ errors: [expect.objectContaining({ code: 'invalid_namespace' })] });
-  });
+  it.each(['a/b', 'a:b', '', '_system_mine', '_systemx'])(
+    'rejects the malformed or reserved namespace name %j',
+    async (ns) => {
+      const { engine } = await bootEngine();
+      await expect(
+        engine.mutate({
+          frame: {
+            '_system_proposals/propose_namespace': {
+              params: { ns, proposedReason: 'malformed' },
+              fields: { id: true }
+            }
+          },
+          ctx: makeCtx()
+        })
+      ).resolves.toMatchObject({
+        errors: [expect.objectContaining({ code: 'invalid_namespace' })]
+      });
+    }
+  );
 
   it('refuses a name the engine already holds, and a failed attempt leaves it in place', async () => {
     const { engine, datasets } = await bootEngine();
