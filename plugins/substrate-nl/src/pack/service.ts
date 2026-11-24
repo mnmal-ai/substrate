@@ -141,7 +141,7 @@ function transientRefusal(errors: unknown[] | undefined): boolean {
  */
 function principalKey(req: SubstrateRequest): string {
   const id = req.identity;
-  if (id === undefined) return '\u0000anon';
+  if (id === undefined || id === null) return '\u0000anon';
   const { expiresAt: _expiresAt, ...stable } = id;
   return JSON.stringify(canonical(stable));
 }

@@ -43,8 +43,9 @@ On a ~40 GB real-world-shaped benchmark store, in the first measured run, the wh
 #### Verify
 
 1. On exit `0`, run `VACUUM (ANALYZE)` on the target.
-2. Switch over: set `SUBSTRATE_DATABASE_URL` to the target (the report prints it as `switch over`), or rename the databases so the target takes the source's name and the service environment and backup jobs stay unchanged.
-3. Start the new release and check `/health` and `substrate-admin doctor`.
+2. Idempotency keys are not copied. A client that retries a write it sent to the source before the switch gets a fresh write on the target, so let in-flight retries finish before the window.
+3. Switch over: set `SUBSTRATE_DATABASE_URL` to the target (the report prints it as `switch over`), or rename the databases so the target takes the source's name and the service environment and backup jobs stay unchanged.
+4. Start the new release and check `/health` and `substrate-admin doctor`.
 
 If the run did not exit `0`:
 
