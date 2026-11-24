@@ -187,7 +187,7 @@ kernel: substrate-recall
 plugin-dir: /home/you/my-substrate
 ```
 
-The `coordinators:` and `kernel:` lines list the plugins that loaded; here, only the two built-ins. With auth off the server listens on `127.0.0.1` unless `HOST` says otherwise; the Docker image sets `HOST=0.0.0.0` and opts in with `SUBSTRATE_ALLOW_UNAUTHENTICATED_HOST=1`.
+The `coordinators:` and `kernel:` lines list the plugins that loaded; here, only the two built-ins. With auth off the server listens on `127.0.0.1` unless `HOST` says otherwise; the Docker image sets `HOST=0.0.0.0`, and the repository's compose file opts in with `SUBSTRATE_ALLOW_UNAUTHENTICATED_HOST=1`.
 
 Then run the checks in [Verify](#verify) above.
 
@@ -281,6 +281,7 @@ This guide stops at "Substrate is up locally". A production install also wants t
 
 - **Auth.** Set `SUBSTRATE_AUTH_MODE=required` (or `attribute`, which lets anonymous callers through on non-admin routes), set `SUBSTRATE_PUBLIC_ORIGIN` to the origins callers reach the server by (e.g. `https://substrate.example.com:3100`; required with auth on a non-loopback `HOST`, which includes the default `0.0.0.0`), and register keys with `substrate-admin bootstrap` / `substrate-admin register`. Every token must carry `aud`, naming one of those origins, or it is refused. A token signed by an RS256/ES256 key must also carry `exp` and `ns` (the namespaces it may touch); one without `ns` is refused rather than read as `*`, so a third-party issuer must emit both. `substrate-admin doctor` checks the result.
 - **TLS.** `SUBSTRATE_TLS_CERT_PATH` and `SUBSTRATE_TLS_KEY_PATH`, or a reverse proxy in front. The server speaks HTTP/2 only: over TLS by ALPN, and in plain HTTP with prior knowledge (h2c). A proxy must reach it over HTTP/2.
+- **Pinned models and images.** The in-process model is downloaded once from its publisher's current revision and is not checked against a digest, and a file already in `models/` is used as it is. Download it once on a machine you trust, copy `models/` into place and make it read-only to the server. Leave `HF_ENDPOINT` unset in the server's environment, since it redirects that download. The compose files name images by tag (`pgvector/pgvector:pg18`, `ollama/ollama`); in production, pin each by digest (`image: name@sha256:…`) and update the digest deliberately.
 - **Supervision.** systemd or a container orchestrator, restarting on failure. The Docker image (`apps/substrate-image/Dockerfile`) has a `/health` healthcheck.
 - **Index builds.** After an upgrade the server rebuilds indexes in the background and waits when the database volume is short of space. Set `SUBSTRATE_INDEX_DISK_PATH` to the volume's mount (the scaffold writes `off`, which skips the check) and see the [plugin author guide](plugin-author-guide.md#upgrading-an-existing-store).
 - **Upgrades.** Upgrade every instance that shares a store together. A store from before per-type tables must be copied with `substrate-admin migrate-store` first: see [Upgrading to per-type tables](upgrading-to-type-tables.md).

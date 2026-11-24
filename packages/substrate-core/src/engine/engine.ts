@@ -54,7 +54,11 @@ import type {
   SweepDeps,
   WriteEvent
 } from '@mnmal-ai/substrate-types';
-import { DEFAULT_FILTER_WRITE_LIMITS } from '@mnmal-ai/substrate-types';
+import {
+  checkIdentityGrant,
+  DEFAULT_FILTER_WRITE_LIMITS,
+  seesNamespace
+} from '@mnmal-ai/substrate-types';
 import { applyLostNamespace } from '../apply-lost-namespace.js';
 import { MemoryActResultStore } from '../memory-act-result-store.js';
 import { Registry } from '../registry.js';
@@ -227,8 +231,11 @@ export class Engine implements ActHandle {
       shapeRecorder: opts.shapeRecorder
     });
     const tx = new LocalTx({ edges: this.#edges, metric: this.#metric });
-    const makeEnvelope = (keys: string[], parsedByKey: Map<string, ParsedKey | null>) =>
-      this.#makeEnvelope(keys, parsedByKey);
+    const makeEnvelope = (
+      keys: string[],
+      parsedByKey: Map<string, ParsedKey | null>,
+      identity?: Identity | null
+    ) => this.#makeEnvelope(keys, parsedByKey, identity);
     this.#mutation = new MutateDispatch({
       namespaces: this.#namespaces,
       datasets: this.#datasets,
@@ -570,7 +577,7 @@ export class Engine implements ActHandle {
     const keys = Object.keys(input.frame);
     // Pre-parse every key once; everything downstream reads from this map.
     const parsedByKey = buildParsedKeyCache(keys);
-    const envelope = this.#makeEnvelope(keys, parsedByKey);
+    const envelope = this.#makeEnvelope(keys, parsedByKey, input.ctx.identity);
     if (keys.length === 0) return envelope;
 
     const ctx = buildContext(input.ctx, 'query');
@@ -627,6 +634,12 @@ export class Engine implements ActHandle {
           bridgeBuckets.set(parsed.ns, bucket);
         }
         bucket[key] = entry;
+        continue;
+      }
+      // The page limits answer differently for a type that exists, so a key the
+      // entry gate will refuse for its grant goes to that gate as it was sent.
+      if (parsed && !checkIdentityGrant(ctx.identity, parsed.ns, 'query').ok) {
+        localEntries.push([key, entry]);
         continue;
       }
       const paged = applyPageLimits(
@@ -723,7 +736,11 @@ export class Engine implements ActHandle {
     return this.#acts.actResult(id, identity);
   }
 
-  #makeEnvelope(keys: string[], parsedByKey: Map<string, ParsedKey | null>): PackEnvelope {
+  #makeEnvelope(
+    keys: string[],
+    parsedByKey: Map<string, ParsedKey | null>,
+    identity?: Identity | null
+  ): PackEnvelope {
     // Single-ns frames use the per-ns schemaVersion (the common case); multi-ns
     // frames use the federated version so the client can detect drift on any
     // of the referenced namespaces. Empty frames use the federated version —
@@ -738,7 +755,8 @@ export class Engine implements ActHandle {
     let version: string;
     if (nsSet.size === 1) {
       const [ns] = nsSet;
-      if (ns !== undefined && this.#isLive(ns)) {
+      // A namespace the caller holds nothing in answers as one that is not hosted.
+      if (ns !== undefined && this.#isLive(ns) && seesNamespace(identity, ns)) {
         version = this.schemaFor(ns).schemaVersion;
       } else {
         version = this.federatedSchemaVersion();

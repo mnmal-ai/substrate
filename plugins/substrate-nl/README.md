@@ -33,13 +33,15 @@ A **kernel-tier plugin**, installed separately: `pnpm add @mnmal-ai/substrate-nl
 {
   "judge": { "baseUrl": "http://localhost:11434", "model": "qwen3:14b", "timeoutMs": 20000 },
   "rulings": { "tasks": { "liveStatus": { "Task": "open" } } },
-  "packTtlMs": 300000
+  "packTtlMs": 300000,
+  "inFlightPerCaller": 4
 }
 ```
 
 - `judge` optional: an [Ollama](https://ollama.com) server and model for the constrained judge (`timeoutMs` defaults to 20000). Absent means parser-only: every escalation is an honest hand-off. A slow or down judge hands off within `timeoutMs`. A hand-off with words the parser could not read answers `unknown` and runs nothing.
 - `rulings` optional; per-namespace overrides merged over rulings the namespace declares.
 - `packTtlMs` how long a served pack is reused (default 300000).
+- `inFlightPerCaller` asks one caller may have running at once (default 4). One more is answered 429 `too_many_in_flight` with `retry-after`. Sessions that share a key count as one caller.
 
 An unknown config key fails at boot. There are no env fallbacks, and no LLM vendor SDK is bundled.
 

@@ -33,6 +33,19 @@ With no embedder configured (`embedder.kind: "off"`, the default), recall still 
 - `embedder.cacheDir`: where `onnx` downloads models. Use an absolute path.
 - `embedder.timeoutMs`: per-request timeout for write and reindex embeds (`ollama`; default `120000`).
 - `embedder.contextLength`: tokens sent to Ollama as `num_ctx` and `num_batch`. Default: the model's own, read from Ollama's `/api/show`.
+- The limits on query-time work, shown here at their defaults:
+
+  ```json
+  {
+    "embedder": { "kind": "ollama", "baseUrl": "http://localhost:11434", "model": "nomic-embed-text", "dimension": 768 },
+    "queryEmbedRunning": 4,
+    "queryEmbedWaiting": 64,
+    "recallInFlightPerCaller": 4
+  }
+  ```
+
+- `queryEmbedRunning` and `queryEmbedWaiting`: query embeds that run at once across every caller, and how many more wait for a slot (defaults `4` and `64`). One past both fails at once, as an embed timeout does. They cover `POST /recall`, `recall/Hit` frames and the `embeddingSimilar` filter, not write or reindex embeds.
+- `recallInFlightPerCaller`: `POST /recall` requests one caller may have running at once (default `4`). One more is answered 429 `too_many_in_flight`.
 - `queryEmbedTimeoutMs`: timeout for embedding a recall or `embeddingSimilar` query, so a stalled embedder answers 503 instead of holding the caller (default `30000`).
 - `writeEmbedTimeoutMs`: timeout for the embed that follows a write. The write has already committed, but its reply waits for the embed, so this bounds how long a slow embedder can hold it. A failed or timed-out embed leaves the row with no vector or its previous one, and the backfill below repairs it (default `30000`).
 - `embedBackfillIntervalMs`: how often to re-embed rows whose vector is missing, older than the row, or stored under a different model, which is what a failed or timed-out write-path embed or a model switch leaves. Each pass re-reads the current row, takes up to 50 rows per embedded type in id order, and stops when the embedder reports itself unavailable. Postgres stores only; `0` disables (default `60000`).

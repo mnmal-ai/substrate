@@ -958,6 +958,13 @@ export interface KernelRouteClaim {
    * namespace, not merely in some namespace.
    */
   targetNamespace?: 'body';
+  /**
+   * The most requests one caller may have running on this route at once; a
+   * request past it is answered 429 `too_many_in_flight`. For a route whose
+   * work is costly per call (a model). Callers are told apart by identity,
+   * and by peer address where there is none.
+   */
+  maxInFlightPerCaller?: number;
 }
 
 /** Top-level MCP tool registration. */

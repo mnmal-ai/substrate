@@ -10,6 +10,7 @@
 import { type FetchLike, substrateFetch } from '@mnmal-ai/substrate-client';
 import type { KeyMutationRefusal, KeyUpdateRefusal } from '@mnmal-ai/substrate-compose';
 import { trimTrailingSlashes } from '@mnmal-ai/substrate-types';
+import { oneLine } from '../terminal-text.js';
 import type { AdminCliEnv } from './env.js';
 import { AdminCliError } from './errors.js';
 import { resolveAdminAuth } from './identity.js';
@@ -158,9 +159,9 @@ export async function runKeyListViaRoute(
 
 /** A refusal body as one line: its `message`, else `code (reason): detail`, else the status. */
 function failureText(payload: Record<string, unknown>, status: number): string {
-  if (typeof payload.message === 'string') return payload.message;
+  if (typeof payload.message === 'string') return oneLine(payload.message);
   if (typeof payload.code !== 'string') return `HTTP ${status}`;
   const reason = typeof payload.reason === 'string' ? ` (${payload.reason})` : '';
   const detail = typeof payload.detail === 'string' ? `: ${payload.detail}` : '';
-  return `${payload.code}${reason}${detail}`;
+  return oneLine(`${payload.code}${reason}${detail}`);
 }

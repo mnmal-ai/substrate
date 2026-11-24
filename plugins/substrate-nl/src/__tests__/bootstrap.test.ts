@@ -4,8 +4,8 @@ import { bootstrap, NlBootstrapConfigSchema } from '../bootstrap.js';
 import { createNlPlugin } from '../plugin.js';
 
 describe('substrate-nl config', () => {
-  it('empty config is parser-only with the default TTL', () => {
-    expect(NlBootstrapConfigSchema.parse({})).toEqual({ packTtlMs: 300000 });
+  it('empty config is parser-only with the default TTL and in-flight cap', () => {
+    expect(NlBootstrapConfigSchema.parse({})).toEqual({ packTtlMs: 300000, inFlightPerCaller: 4 });
   });
   it('accepts a judge and rulings', () => {
     const c = NlBootstrapConfigSchema.parse({

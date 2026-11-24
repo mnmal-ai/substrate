@@ -63,7 +63,11 @@ export interface ActSubsystemDeps {
   act: { results: ActResultStore; ttlMs: number; maxWriteSteps: number };
   /** The installed action layer, read on each call: it is set after construction. */
   actionLayer: () => ActionLayer | undefined;
-  makeEnvelope: (keys: string[], parsedByKey: Map<string, ParsedKey | null>) => PackEnvelope;
+  makeEnvelope: (
+    keys: string[],
+    parsedByKey: Map<string, ParsedKey | null>,
+    identity?: Identity | null
+  ) => PackEnvelope;
 }
 
 export class ActSubsystem {

@@ -14,7 +14,10 @@ const ROWS = [
   { id: '1', title: 'a', project: 'substrate' },
   { id: '2', title: 'b', project: 'secret' }
 ];
-const req = (id: string | null, grants: Record<string, string[]> = {}): SubstrateRequest => {
+const req = (
+  id: string | null,
+  grants: Record<string, string[]> = { ns: ['read'] }
+): SubstrateRequest => {
   const base: SubstrateRequest = {
     method: 'GET',
     path: '/substrate/v1/nl/pack/ns',
@@ -119,7 +122,7 @@ describe('PackService', () => {
     const n = e.calls;
     await svc.get('ns', req('a', { '*': ['x'], ns: ['read'] })); // same grants, key order differs
     expect(e.calls).toBe(n);
-    await svc.get('ns', req('a', { ns: [] })); // narrowed
+    await svc.get('ns', req('a', { ns: ['read', 'mutate'] })); // a different grant
     expect(e.calls).toBeGreaterThan(n);
   });
 
@@ -128,7 +131,7 @@ describe('PackService', () => {
     const svc = new PackService({ engine: e });
     const tenant = (t: string): SubstrateRequest => {
       const r = req('a');
-      r.identity = { id: 'a', grants: {}, tenant: t };
+      r.identity = { id: 'a', grants: { ns: ['read'] }, tenant: t };
       return r;
     };
     await svc.get('ns', tenant('t1'));
@@ -235,5 +238,11 @@ describe('PackService', () => {
     e.query = async () => ({ data: {}, errors: [{ code, message: 'try later' }] });
     const svc = new PackService({ engine: e });
     await expect(svc.get('ns', req('a'))).rejects.toThrow(code);
+  });
+
+  it('answers for a namespace the caller holds nothing in as for an unknown one', async () => {
+    const svc = new PackService({ engine: engine() });
+    expect(await svc.get('ns', req('a', { other: ['read'] }))).toBeUndefined();
+    expect(await svc.get('ns', req('a', { ns: ['mutate'] }))).toBeDefined();
   });
 });
