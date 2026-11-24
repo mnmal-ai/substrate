@@ -81,6 +81,8 @@ export interface WalkScope extends WalkResolvers {
   frameBindings?: { count: number };
   /** Expression nodes checked so far in this frame, shared by every scope derived from the seed. */
   exprNodes?: { count: number };
+  /** Extension-operator clauses met in this frame's `where`, one counter for the whole tree. */
+  extensionOps?: { count: number };
   /** Expressions see only `fields`, not the row metadata names (a `having` sees the frame's outputs only). */
   outputsOnly?: boolean;
 }
