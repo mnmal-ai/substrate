@@ -393,7 +393,7 @@ export interface SubscriptionEntry {
 }
 
 /** The per-frame grant gate, the one the SDK's referent check also asks. */
-export { checkIdentityGrant } from '@mnmal-ai/substrate-types';
+export { checkIdentityGrant, readsEveryNamespace } from '@mnmal-ai/substrate-types';
 
 export function toResolverArgs(
   entry: FrameEntry,
