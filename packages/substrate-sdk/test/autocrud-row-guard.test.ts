@@ -65,6 +65,31 @@ describe('autoCRUD row guard', () => {
     expect(await title(dataset)).toBe('secret');
   });
 
+  it('answers a delete of a hidden row exactly as a delete of a missing one', async () => {
+    const { engine } = await setup();
+    const answer = async (key: string, params: Record<string, unknown>) => {
+      const env = await engine.mutate({
+        frame: { [key]: { params, fields: { id: true } } },
+        ctx: as('bob')
+      });
+      // Only the id differs between the two rows.
+      return JSON.parse(
+        JSON.stringify({ data: env.data, errors: env.errors ?? [] }).replaceAll(
+          String(params.id),
+          'ID'
+        )
+      );
+    };
+    for (const [key, extra] of [
+      ['app/deleteNote', {}],
+      ['app/deleteNote', { nosuch: 1 }]
+    ] as const) {
+      expect(await answer(key, { id: 'n1', ...extra })).toEqual(
+        await answer(key, { id: 'absent', ...extra })
+      );
+    }
+  });
+
   it('does not delete a row the caller cannot read', async () => {
     const { engine, dataset } = await setup();
     await engine.mutate({

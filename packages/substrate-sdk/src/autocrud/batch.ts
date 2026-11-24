@@ -494,7 +494,7 @@ export function deleteBatchResolver(
     const refusal = new FirstRefusal(n);
 
     for (let i = 0; refusal.live(i); i++) {
-      if (!hidden[i]) refusal.check(i, () => prepareDelete(typeName, list[i]?.params));
+      refusal.check(i, () => prepareDelete(typeName, list[i]?.params));
     }
     const doomed: number[] = [];
     for (let i = 0; refusal.live(i); i++) {
