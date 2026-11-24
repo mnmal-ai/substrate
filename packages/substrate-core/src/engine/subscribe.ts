@@ -78,6 +78,43 @@ function asRows(
   return isAsyncIterable<Row>(result) ? null : result;
 }
 
+/** Most predicates one subscription `where` may carry: every write to the type evaluates each of them. */
+export const MAX_SUBSCRIBE_PREDICATES = 64;
+/** Most values one list operand (an `in`) may carry in a subscription `where`. */
+export const MAX_SUBSCRIBE_LIST_VALUES = 1000;
+/** Most open subscriptions on one type, across all callers. */
+export const MAX_SUBSCRIPTIONS_PER_TYPE = 1024;
+
+/** Refuse a subscription `where` whose predicates or list operands exceed the caps. */
+export function assertSubscribeWhereSize(where: unknown): void {
+  const count = (node: unknown, path: string[]): number => {
+    if (Array.isArray(node)) {
+      if (node.every((v) => typeof v !== 'object' || v === null)) {
+        if (node.length > MAX_SUBSCRIBE_LIST_VALUES) {
+          throw new FilterValidationError(
+            'invalid_logical',
+            `a subscription where takes at most ${MAX_SUBSCRIBE_LIST_VALUES} values in one list`,
+            path
+          );
+        }
+        return 1;
+      }
+      return node.reduce<number>((n, v, i) => n + count(v, [...path, String(i)]), 0);
+    }
+    if (typeof node === 'object' && node !== null && !(node instanceof Date)) {
+      return Object.entries(node).reduce((n, [k, v]) => n + count(v, [...path, k]), 0);
+    }
+    return 1;
+  };
+  if (count(where, ['where']) > MAX_SUBSCRIBE_PREDICATES) {
+    throw new FilterValidationError(
+      'invalid_logical',
+      `a subscription where takes at most ${MAX_SUBSCRIBE_PREDICATES} predicates`,
+      ['where']
+    );
+  }
+}
+
 /** Params a live read (subscribe, or stream on a type) accepts; anything else is `unknown_param`. */
 export const KNOWN_SUBSCRIBE_PARAMS: ReadonlySet<string> = new Set(['where', 'orderBy']);
 
@@ -662,30 +699,51 @@ export class SubscribeSubsystem {
     if (where !== undefined || orderBy !== undefined) {
       const schema = this.#schemaFor(ns);
       const typeSchema = schema.types[name];
-      if (typeSchema) {
-        try {
+      try {
+        if (where !== undefined) assertSubscribeWhereSize(where);
+        if (typeSchema) {
           validateFilter({
             ...(where !== undefined ? { where } : {}),
             ...(orderBy !== undefined ? { orderBy } : {}),
             typeSchema,
             capabilities: dataset.capabilities
           });
-        } catch (err) {
-          if (err instanceof FilterValidationError) {
-            deliverFrame(
-              input.onFrame,
-              {
-                id: input.id,
-                kind: 'error',
-                errors: [{ message: err.message, code: err.code, path: [key, ...err.path] }]
-              },
-              this.#metric
-            );
-            return null;
-          }
-          throw err;
         }
+      } catch (err) {
+        if (err instanceof FilterValidationError) {
+          deliverFrame(
+            input.onFrame,
+            {
+              id: input.id,
+              kind: 'error',
+              errors: [{ message: err.message, code: err.code, path: [key, ...err.path] }]
+            },
+            this.#metric
+          );
+          return null;
+        }
+        throw err;
       }
+    }
+
+    if ((this.#subscriptions.get(`${ns}/${name}`)?.size ?? 0) >= MAX_SUBSCRIPTIONS_PER_TYPE) {
+      this.#metric('engine_subscription_type_full', { key });
+      deliverFrame(
+        input.onFrame,
+        {
+          id: input.id,
+          kind: 'error',
+          errors: [
+            {
+              message: `'${key}' already has ${MAX_SUBSCRIPTIONS_PER_TYPE} open subscriptions`,
+              code: 'too_many_subscriptions',
+              path: [key]
+            }
+          ]
+        },
+        this.#metric
+      );
+      return null;
     }
 
     // Register the entry BEFORE running the snapshot resolver, so a write

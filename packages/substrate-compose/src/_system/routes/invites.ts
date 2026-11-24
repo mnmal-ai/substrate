@@ -10,7 +10,7 @@ import { randomBytes } from 'node:crypto';
 import type { Engine } from '@mnmal-ai/substrate-core';
 import { encodeList } from '@mnmal-ai/substrate-policy';
 import type { HttpHandler } from '@mnmal-ai/substrate-types';
-import { buildContext, jsonResponse } from '../../routes/helpers.js';
+import { buildContext, jsonResponse, refusalStatus } from '../../routes/helpers.js';
 import { SYSTEM_NAMESPACE } from '../types.js';
 import {
   asStringArray,
@@ -103,7 +103,7 @@ export function invitesRoute(engine: Engine, opts: KeysRouteOptions): HttpHandle
     if (envelope.errors !== undefined && envelope.errors.length > 0) {
       const first = envelope.errors[0];
       const code = first?.code ?? 'internal_error';
-      const status = code === 'policy_denied' ? 403 : 500;
+      const status = refusalStatus(code);
       return jsonResponse(status, {
         code,
         message: first?.message ?? 'invite creation failed'

@@ -43,7 +43,7 @@ Read the frames, not the status.
 | 1 | `error { code: 'subscription_overloaded' }` → `end { final: true, reason: 'subscription_overloaded' }` | per-entry queue breached `queueLimit` (default 256) | **Retryable with backoff**, bounded |
 | 2 | `end { final: true, reason: 'server_restart' }` → end of body | graceful server shutdown | **Retryable immediately**, unbounded |
 | 3 | `end { final: true, reason: 'credential_expired' \| 'credential_changed' \| 'credential_revoked' }` | the caller's credential lapsed mid-session | Resubscribe with a current credential; a revoked one will be refused |
-| 4 | `error { code: <anything else> }` | policy deny, filter validation, unauthorized namespace, … | **Never auto-retry**: retrying a rejected frame yields an identical rejection, i.e. an infinite resubscribe loop |
+| 4 | `error { code: <anything else> }` | policy deny, filter validation (including a `where` past 64 predicates or 1,000 list values), `too_many_subscriptions` (a type already holds 1,024), unauthorized namespace, … | **Never auto-retry**: retrying a rejected frame yields an identical rejection, i.e. an infinite resubscribe loop |
 
 A body that ends with no preceding `end` frame is an abrupt drop. The session
 is gone; subscribe again for a fresh snapshot.

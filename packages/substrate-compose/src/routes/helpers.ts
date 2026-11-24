@@ -327,3 +327,12 @@ function buildEncodeCtx(
   if (opts.returnsByKey !== undefined) out.returnsByKey = opts.returnsByKey;
   return out;
 }
+
+/** The HTTP status for an engine refusal code: 403 when the caller lacks the grant, else 500. */
+export function refusalStatus(code: string): 403 | 500 {
+  return code === 'policy_denied' ||
+    code === 'unauthorized_namespace' ||
+    code === 'unauthorized_capability'
+    ? 403
+    : 500;
+}
