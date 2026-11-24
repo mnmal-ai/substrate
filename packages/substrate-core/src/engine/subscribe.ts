@@ -84,6 +84,8 @@ export const MAX_SUBSCRIBE_PREDICATES = 64;
 export const MAX_SUBSCRIBE_LIST_VALUES = 1000;
 /** Most open subscriptions on one type, across all callers. */
 export const MAX_SUBSCRIPTIONS_PER_TYPE = 1024;
+/** Most of those that callers with no identity may hold, so they cannot fill the type alone. */
+export const MAX_ANONYMOUS_SUBSCRIPTIONS_PER_TYPE = MAX_SUBSCRIPTIONS_PER_TYPE / 2;
 
 /** Params a live read (subscribe, or stream on a type) accepts; anything else is `unknown_param`. */
 export const KNOWN_SUBSCRIBE_PARAMS: ReadonlySet<string> = new Set(['where', 'orderBy']);
@@ -702,8 +704,18 @@ export class SubscribeSubsystem {
       }
     }
 
-    if ((this.#subscriptions.get(`${ns}/${name}`)?.size ?? 0) >= MAX_SUBSCRIPTIONS_PER_TYPE) {
-      this.#metric('engine_subscription_type_full', { key });
+    const open = this.#subscriptions.get(`${ns}/${name}`);
+    const anonymous = (ctx.identity ?? null) === null;
+    const anonymousOpen = (): number => {
+      let n = 0;
+      for (const e of open ?? []) if ((e.ctx.identity ?? null) === null) n++;
+      return n;
+    };
+    if (
+      (open?.size ?? 0) >= MAX_SUBSCRIPTIONS_PER_TYPE ||
+      (anonymous && anonymousOpen() >= MAX_ANONYMOUS_SUBSCRIPTIONS_PER_TYPE)
+    ) {
+      this.#metric('engine_subscription_type_full', { key, anonymous });
       deliverFrame(
         input.onFrame,
         {
@@ -711,7 +723,7 @@ export class SubscribeSubsystem {
           kind: 'error',
           errors: [
             {
-              message: `'${key}' already has ${MAX_SUBSCRIPTIONS_PER_TYPE} open subscriptions`,
+              message: `'${key}' has no subscription slot left for this caller`,
               code: 'too_many_subscriptions',
               path: [key]
             }
