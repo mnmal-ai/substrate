@@ -13,6 +13,7 @@ import type {
   EngineInput,
   FrameEntry,
   IdempotencyStore,
+  Identity,
   PackEnvelope,
   QualifiedFrame,
   RequestContext,
@@ -64,7 +65,11 @@ export interface MutateDispatchDeps {
   committed: CommittedWritesQueue;
   subscribe: SubscribeSubsystem;
   idempotency: { store: IdempotencyStore; defaultTtlMs: number } | undefined;
-  makeEnvelope: (keys: string[], parsedByKey: Map<string, ParsedKey | null>) => PackEnvelope;
+  makeEnvelope: (
+    keys: string[],
+    parsedByKey: Map<string, ParsedKey | null>,
+    identity?: Identity | null
+  ) => PackEnvelope;
 }
 
 export class MutateDispatch {
@@ -110,7 +115,7 @@ export class MutateDispatch {
     const keys = Object.keys(input.frame);
     // Pre-parse every key once; everything downstream reads from this map.
     const parsedByKey = buildParsedKeyCache(keys);
-    const envelope = this.#makeEnvelope(keys, parsedByKey);
+    const envelope = this.#makeEnvelope(keys, parsedByKey, input.ctx.identity);
     if (keys.length === 0) return envelope;
 
     // §5.13 idempotency. Frame-scoped dedup key resolution + cache hit short-

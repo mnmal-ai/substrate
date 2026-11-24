@@ -35,6 +35,7 @@ import {
   grantRefusal,
   grantRefusalCode,
   ROW_POLICY_BLOCKS_WALK,
+  seesNamespace,
   WALK_UNSUPPORTED_REF,
   WALKS_IN_MUTATION,
   WALKS_UNSUPPORTED_STORE
@@ -159,6 +160,11 @@ export class EntryGate {
     verb?: AutoCrudVerb,
     args?: ResolverArgs
   ): PolicyDecision {
+    // The grant first, as at the entry gate: what a namespace holds is not told to a caller it refuses.
+    const nsGate = checkIdentityGrant(identity, ns, operation);
+    if (!nsGate.ok) {
+      return { allow: false, reason: grantRefusal(ns, nsGate) };
+    }
     if (this.#tombstoned.has(ns)) {
       return { allow: false, reason: `namespace '${ns}' was deleted` };
     }
@@ -169,10 +175,6 @@ export class EntryGate {
     const entry = nsCfg.registry.get(type);
     if (entry?.kind !== 'type') {
       return { allow: false, reason: `unknown type '${type}' in namespace '${ns}'` };
-    }
-    const nsGate = checkIdentityGrant(identity, ns, operation);
-    if (!nsGate.ok) {
-      return { allow: false, reason: grantRefusal(ns, nsGate) };
     }
     // Where auth is on, the mutate route admits no caller without an identity,
     // whatever the mode; a probe has no route gate in front of it.
@@ -376,11 +378,14 @@ export class EntryGate {
   }
 
   /** An unqualified key's refusal, naming the fix when one is evident. */
-  unqualifiedMessage(key: string): string {
+  unqualifiedMessage(key: string, identity: RequestContext['identity'] | null | undefined): string {
     if (key === 'params' || key === 'fields' || key === 'where') {
       return `'${key}' is part of a frame, not a frame key: send { "<ns>/<op>": { "params": {...}, "fields": {...} } }`;
     }
-    const owners = [...this.#namespaces].filter(([, cfg]) => cfg.registry.get(key) !== undefined);
+    // Only a namespace the caller holds something in is named.
+    const owners = [...this.#namespaces].filter(
+      ([ns, cfg]) => cfg.registry.get(key) !== undefined && seesNamespace(identity, ns)
+    );
     const hint = owners.length === 1 ? ` — did you mean '${owners[0]?.[0]}/${key}'?` : '';
     return `unqualified frame key '${key}' — expected '<ns>/<name>'${hint}`;
   }
@@ -405,7 +410,7 @@ export class EntryGate {
     txEntries?: number
   ): PreparedEntry | null {
     if (!parsed) {
-      addError(envelope, [key], this.unqualifiedMessage(key), 'unqualified_key');
+      addError(envelope, [key], this.unqualifiedMessage(key, ctxBase.identity), 'unqualified_key');
       this.#metric('engine_unqualified_key', key);
       return null;
     }
