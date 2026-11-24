@@ -294,16 +294,6 @@ const REFUSED_IN_BAND = new Set([
   'sketch_unresolved'
 ]);
 
-// The `_system` key and invite routes refuse an admin of another namespace with a 500, not a 403.
-const ANSWERS_500 = new Set(
-  [
-    'POST /substrate/v1/_system/invites',
-    'GET /substrate/v1/_system/keys',
-    'POST /substrate/v1/_system/keys',
-    'PATCH /substrate/v1/_system/keys'
-  ].flatMap((route) => [`${route}: admin in the target`, `${route}: admin in another namespace`])
-);
-
 async function call(route: Route, c: Case, grant: Grant | null) {
   const res = await booted.server.inject({
     method: route.method,
@@ -336,7 +326,7 @@ describe('route authorization grid', () => {
       const name = c.label === undefined ? key : `${key} (${c.label})`;
       for (const [who, grant] of Object.entries(CALLERS)) {
         const cell = `${name}: ${who}`;
-        (ANSWERS_500.has(cell) ? it.fails : it)(cell, async () => {
+        it(cell, async () => {
           const got = await call({ method, path }, c, grant);
           expect(got).toMatchObject({ refused: !admits(c, grant) });
           // An admitted request that fails inside the handler says nothing about the gate.

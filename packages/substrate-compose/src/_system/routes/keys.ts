@@ -18,7 +18,7 @@ import { createHash } from 'node:crypto';
 import type { Engine } from '@mnmal-ai/substrate-core';
 import { encodeList } from '@mnmal-ai/substrate-policy';
 import type { HttpHandler, SubstrateResponse } from '@mnmal-ai/substrate-types';
-import { buildContext, jsonResponse } from '../../routes/helpers.js';
+import { buildContext, jsonResponse, refusalStatus } from '../../routes/helpers.js';
 import { KEY_ALGORITHMS, KEY_TYPE, SYSTEM_NAMESPACE } from '../types.js';
 import {
   algorithmMatchesKey,
@@ -272,7 +272,7 @@ export function keysRoute(engine: Engine, opts: KeysRouteOptions): HttpHandler {
     if (existing.errors !== undefined && existing.errors.length > 0) {
       const first = existing.errors[0];
       const code = first?.code ?? 'internal_error';
-      return jsonResponse(code === 'policy_denied' ? 403 : 500, {
+      return jsonResponse(refusalStatus(code), {
         code,
         message: first?.message ?? 'could not check for an existing key'
       });
@@ -326,7 +326,7 @@ export function keysRoute(engine: Engine, opts: KeysRouteOptions): HttpHandler {
     const keyErr = errorFor(keyFrameKey);
     if (keyErr !== undefined) {
       const code = keyErr.code ?? 'internal_error';
-      const status = code === 'policy_denied' ? 403 : code === 'kid_already_live' ? 409 : 500;
+      const status = code === 'kid_already_live' ? 409 : refusalStatus(code);
       return jsonResponse(status, {
         code,
         message: keyErr.message ?? 'key registration failed'

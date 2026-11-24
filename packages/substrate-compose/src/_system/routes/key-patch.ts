@@ -20,7 +20,7 @@ import {
   isActiveAdminKeyRow
 } from '@mnmal-ai/substrate-policy';
 import type { HttpHandler, Row } from '@mnmal-ai/substrate-types';
-import { buildContext, jsonResponse } from '../../routes/helpers.js';
+import { buildContext, jsonResponse, refusalStatus } from '../../routes/helpers.js';
 import { KEY_TYPE, SYSTEM_NAMESPACE } from '../types.js';
 import { type KeysRouteOptions, parseBody, refuseUnhosted, unhostedNamespaces } from './shared.js';
 
@@ -68,7 +68,7 @@ export function keyPatchRoute(engine: Engine, opts: KeysRouteOptions): HttpHandl
     if (all.errors !== undefined && all.errors.length > 0) {
       const first = all.errors[0];
       const code = first?.code ?? 'internal_error';
-      return jsonResponse(code === 'policy_denied' ? 403 : 500, {
+      return jsonResponse(refusalStatus(code), {
         code,
         message: first?.message ?? 'could not read the key table'
       });
@@ -157,7 +157,7 @@ export function keyPatchRoute(engine: Engine, opts: KeysRouteOptions): HttpHandl
     const err = errs[0];
     if (err !== undefined) {
       const code = err.code ?? 'internal_error';
-      return jsonResponse(code === 'policy_denied' ? 403 : 500, {
+      return jsonResponse(refusalStatus(code), {
         code,
         message: err.message ?? 'key update failed'
       });
