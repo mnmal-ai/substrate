@@ -87,7 +87,7 @@ const ONNX_MODELS = {
 } as const;
 
 /** The onnx embedder's backend. Undeclared by substrate-embedder, so the runtime installs it. */
-export const FASTEMBED_RANGE = '^2.1.1';
+export const FASTEMBED_RANGE = '^3.0.0';
 
 /**
  * `<runtime>/substrate-recall.config.json`, or null for `--embedder=none`. The

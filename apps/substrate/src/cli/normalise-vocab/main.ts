@@ -12,7 +12,7 @@
 
 import { noRedirectFetch, tokenAudience } from '@mnmal-ai/substrate-client';
 import { trimTrailingSlashes } from '@mnmal-ai/substrate-types';
-import { oneLine } from '../../terminal-text.js';
+import { jsonForTerminal, oneLine } from '../../terminal-text.js';
 
 export interface NormaliseVocabOptions {
   baseUrl?: string;
@@ -83,7 +83,7 @@ export async function runNormaliseVocab(
     return 2;
   }
   const body = (await res.json().catch(() => ({}))) as Summary;
-  if (argv.includes('--json')) write(`${JSON.stringify(body, null, 2)}\n`);
+  if (argv.includes('--json')) write(`${jsonForTerminal(JSON.stringify(body, null, 2))}\n`);
 
   if (res.status === 409) {
     if (!argv.includes('--json')) {

@@ -109,7 +109,7 @@ describe('runInit (--yes)', () => {
       }
     });
     const deps = JSON.parse(readFileSync(join(target, 'package.json'), 'utf8')).dependencies;
-    expect(deps.fastembed).toBe('^2.1.1');
+    expect(deps.fastembed).toBe('^3.0.0');
   });
 
   it('--embedder=minilm writes the smaller 384-dim model', async () => {

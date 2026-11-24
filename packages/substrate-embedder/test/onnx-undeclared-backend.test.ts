@@ -52,7 +52,7 @@ describe('fastembed stays an undeclared, deferred backend', () => {
     ).toEqual([]);
   });
 
-  it('the locally spelled-out model ids match fastembed 2.1.1', async () => {
+  it('the locally spelled-out model ids match fastembed 3.0.0', async () => {
     // Read the map through the module's own behaviour rather than exporting it
     // just for the test: every supported short name must construct, and the
     // constructor is what rejects an unknown one.
