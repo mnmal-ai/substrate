@@ -21,7 +21,7 @@ import type {
   StorageReport,
   SubstrateServer
 } from '@mnmal-ai/substrate-types';
-import { grantedIn, grantOf } from '@mnmal-ai/substrate-types';
+import { grantedIn, grantOf, holdsEverywhere } from '@mnmal-ai/substrate-types';
 import { backfillFieldRoute } from '../_system/backfill-field.js';
 import { dropNamespaceRoute, dropTypeRoute } from '../_system/drop.js';
 import type { KeyRegistry } from '../_system/index.js';
@@ -53,6 +53,7 @@ import { registerStreamRoutes } from '../routes/stream-routes.js';
 import { whoamiRoute } from '../routes/whoami.js';
 import {
   type Capability,
+  withAdminInBodyNamespace,
   wrapPluginRouter,
   wrapPluginRouterWithSystemActor
 } from './auth-middleware.js';
@@ -218,16 +219,6 @@ export async function registerCoreRoutes(args: CoreRoutesArgs): Promise<{
       'admin'
     )
   );
-  // Admin-gated, unlike /substrate/v1/metrics: this says how the deployment is built
-  // — store kind, auth mode, proxy allowlist.
-  if (configReport !== undefined) {
-    server.route(
-      'GET',
-      '/substrate/v1/config',
-      gate(configRouteHandler(configReport, storageReport), 'admin')
-    );
-  }
-
   // §5.12: admin-gated invite mint + public rate-limited register.
   // `/register` bypasses auth entirely — access control IS the invite. The
   // rate limiter lives until `stop()`; tests may inject their own.
@@ -294,40 +285,29 @@ export async function registerCoreRoutes(args: CoreRoutesArgs): Promise<{
   // The `'admin'` gate asks whether admin is held ANYWHERE; these four act on
   // the namespace named in the body, so admin must be held in THAT namespace.
   const adminCap = adminCapability ?? 'admin';
-  const adminInTarget =
-    (handler: HttpHandler): HttpHandler =>
-    async (req) => {
-      if (auth === undefined) return handler(req);
-      let ns: unknown;
-      try {
-        ns = (JSON.parse(req.body?.toString('utf8') ?? '') as { namespace?: unknown }).namespace;
-      } catch {
-        return handler(req); // the handler owns the malformed-body answer
-      }
-      if (typeof ns !== 'string') return handler(req);
-      const held = grantedIn(grantOf(req.identity ?? null), ns);
-      if (held.includes(adminCap)) return handler(req);
-      return {
-        status: 403,
-        headers: { 'content-type': 'application/json' },
-        body: Buffer.from(
-          JSON.stringify({ code: 'forbidden', required: `${ns}:${adminCap}` }),
-          'utf8'
-        )
-      };
-    };
-  // A store-wide action needs admin held store-wide: the `'*'` entry itself, not admin in some namespace.
+  const adminInTarget = (handler: HttpHandler): HttpHandler =>
+    auth === undefined ? handler : withAdminInBodyNamespace(handler, adminCap);
+  // A store-wide action needs admin in every namespace: under `*`, with no explicit entry narrowing it.
   const adminStoreWide =
     (handler: HttpHandler): HttpHandler =>
     async (req) => {
       if (auth === undefined) return handler(req);
-      if (grantedIn(grantOf(req.identity ?? null), '*').includes(adminCap)) return handler(req);
+      if (holdsEverywhere(req.identity ?? null, adminCap)) return handler(req);
       return {
         status: 403,
         headers: { 'content-type': 'application/json' },
         body: Buffer.from(JSON.stringify({ code: 'forbidden', required: `*:${adminCap}` }), 'utf8')
       };
     };
+  // Admin-gated, unlike /substrate/v1/metrics: this says how the deployment is built
+  // — store kind, auth mode, proxy allowlist — for every namespace at once.
+  if (configReport !== undefined) {
+    server.route(
+      'GET',
+      '/substrate/v1/config',
+      gate(adminStoreWide(configRouteHandler(configReport, storageReport)), 'admin')
+    );
+  }
   // A drop's edges can reach other namespaces; the routes ask about those here.
   const dropGrants =
     auth === undefined
@@ -335,6 +315,8 @@ export async function registerCoreRoutes(args: CoreRoutesArgs): Promise<{
       : {
           holds: (req: Parameters<HttpHandler>[0], ns: string, cap: string) =>
             grantedIn(grantOf(req.identity ?? null), ns).includes(cap),
+          holdsEverywhere: (req: Parameters<HttpHandler>[0], cap: string) =>
+            holdsEverywhere(req.identity ?? null, cap),
           adminCapability: adminCap
         };
   // Drop-namespace + drop-type admin ops. Both emit AuditEvent inside the

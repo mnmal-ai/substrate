@@ -24,9 +24,9 @@ const authCfg: AuthConfig = {
   adminCapability: ADMIN_CAP
 };
 
-function token(capabilities: string[]): string {
+function token(capabilities: string[], ns: string[] = ['*']): string {
   const now = Math.floor(Date.now() / 1000);
-  return signHs256({ sub: 'tester', exp: now + 60, capabilities, ns: ['*'] }, SECRET, { kid: KID });
+  return signHs256({ sub: 'tester', exp: now + 60, capabilities, ns }, SECRET, { kid: KID });
 }
 
 const REPORT: ConfigReport = {
@@ -103,6 +103,18 @@ describe('GET /substrate/v1/config', () => {
       headers: { authorization: `Bearer ${token(['read', 'mutate'])}` }
     });
     expect(res.status).toBe(403);
+    await composed.stop();
+  });
+
+  it('403s an admin of one namespace: the report describes the whole store', async () => {
+    const { server, composed } = await mk({ auth: authCfg, configReport: REPORT });
+    const res = await server.inject({
+      method: 'GET',
+      path: '/substrate/v1/config',
+      headers: { authorization: `Bearer ${token([ADMIN_CAP, 'read'], ['tenant'])}` }
+    });
+    expect(res.status).toBe(403);
+    expect(JSON.parse(String(res.body))).toEqual({ code: 'forbidden', required: '*:admin' });
     await composed.stop();
   });
 

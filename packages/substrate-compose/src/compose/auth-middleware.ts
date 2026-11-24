@@ -259,3 +259,30 @@ export function wrapPluginRouter(
     patch: (path, h) => router.patch(path, gate('PATCH', h))
   };
 }
+
+/**
+ * Requires `adminCap` in the namespace the JSON body's `namespace` names. The
+ * route gate asks whether admin is held anywhere; a route that acts on one
+ * named namespace wraps its handler in this as well. A body with no string
+ * `namespace` passes through, so the handler gives its own malformed-body answer.
+ */
+export function withAdminInBodyNamespace(handler: HttpHandler, adminCap: string): HttpHandler {
+  return async (req) => {
+    let ns: unknown;
+    try {
+      ns = (JSON.parse(req.body?.toString('utf8') ?? '') as { namespace?: unknown }).namespace;
+    } catch {
+      return handler(req);
+    }
+    if (typeof ns !== 'string') return handler(req);
+    if (grantedIn(grantOf(req.identity ?? null), ns).includes(adminCap)) return handler(req);
+    return {
+      status: 403,
+      headers: { 'content-type': 'application/json' },
+      body: Buffer.from(
+        JSON.stringify({ code: 'forbidden', required: `${ns}:${adminCap}` }),
+        'utf8'
+      )
+    };
+  };
+}
