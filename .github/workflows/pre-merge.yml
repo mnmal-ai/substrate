@@ -63,7 +63,7 @@ jobs:
           RUN_ID: ${{ github.run_id }}
         run: node .github/scripts/pre-merge-mode.mjs >> "$GITHUB_OUTPUT"
 
-      - name: Plan one pass per package
+      - name: Plan the passes
         id: plan
         if: steps.mode.outputs.mode == 'run'
         run: echo "matrix=$(.github/scripts/test-pg-gated.sh plan)" >> "$GITHUB_OUTPUT"
@@ -72,7 +72,7 @@ jobs:
   # refuse a superuser, and the credentials are literals scoped to this
   # throwaway service container.
   pg-pass:
-    name: pg ${{ matrix.dir }}
+    name: pg ${{ matrix.name }}
     needs: pg-plan
     if: needs.pg-plan.outputs.mode == 'run'
     runs-on: ubuntu-latest
@@ -124,7 +124,7 @@ jobs:
         env:
           POSTGRES_URL: postgres://substrate_test:ci-substrate-test@127.0.0.1:5432/substrate_test
           PG_REPORTS: ${{ runner.temp }}/pg-reports
-        run: .github/scripts/test-pg-gated.sh run "${{ matrix.dir }}"
+        run: .github/scripts/test-pg-gated.sh run "${{ matrix.dir }}" "${{ matrix.part }}"
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         if: always()
