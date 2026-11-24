@@ -40,12 +40,15 @@ import { withRequestContext } from './routes/helpers.js';
 /**
  * Runs at most `max` requests per caller on `handler` at once and answers the
  * rest 429. It sits inside the auth wrapper, so `identity` is the verified one.
+ * Callers with neither an identity nor an address share one allowance.
  */
 export function withInFlightCap(handler: HttpHandler, max: number): HttpHandler {
   const running = new Map<string, number>();
   return async (req) => {
     const id = req.identity?.id;
-    const caller = typeof id === 'string' ? `id:${id}` : `ip:${req.peerIp ?? 'unknown'}`;
+    // `clientIp` is the address behind a trusted proxy, so its clients are not one caller.
+    const caller =
+      typeof id === 'string' ? `id:${id}` : `ip:${req.clientIp ?? req.peerIp ?? 'unknown'}`;
     const n = running.get(caller) ?? 0;
     if (n >= max) {
       return {
