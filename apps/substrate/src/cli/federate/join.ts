@@ -83,7 +83,7 @@ function registerFailure(status: number, body: unknown, origin: string): AdminCl
       ? String((body as Record<string, unknown>).message ?? '')
       : '';
   return new AdminCliError(
-    `${origin} refused the registration (HTTP ${status})${message.length > 0 ? `: ${message}` : ''}`,
+    `${origin} refused the registration (HTTP ${status})${message.length > 0 ? `: ${oneLine(message)}` : ''}`,
     3
   );
 }
@@ -95,6 +95,14 @@ export async function runJoin(args: JoinArgs, deps: JoinDeps = {}): Promise<Join
 
   const payload = decodeJoinToken(args.token);
   const name = args.name ?? new URL(payload.origin).hostname;
+  // The name becomes a file name and part of the printed env lines.
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)) {
+    throw new AdminCliError(
+      `'${oneLine(name)}' cannot name the key file — pass --name with letters, digits, '.', '_' or '-'. ` +
+        'Nothing has been redeemed; your token is still valid.',
+      2
+    );
+  }
   const keyPath = args.keyOut ?? pathJoin(home, '.config/substrate/keys', `${name}.key`);
 
   // FIRST — before generating anything or contacting the peer.
@@ -151,7 +159,8 @@ export async function runJoin(args: JoinArgs, deps: JoinDeps = {}): Promise<Join
   // generic exit 1, giving no hint that the invite is already spent.
   try {
     mkdirSync(dirname(keyPath), { recursive: true, mode: 0o700 });
-    writeFileSync(keyPath, privateKey.toString(), { mode: 0o600 });
+    // `wx`: a file that appeared since the check above is never written through.
+    writeFileSync(keyPath, privateKey.toString(), { mode: 0o600, flag: 'wx' });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     throw new AdminCliError(
