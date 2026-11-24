@@ -16,7 +16,7 @@ import type {
 } from '@mnmal-ai/substrate-types';
 import { applyObligations } from '../policy-evaluator.js';
 import type { RegistryEntry } from '../registry.js';
-import { sealCursor } from './cursor-seal.js';
+import { cursorBinding, sealCursor } from './cursor-seal.js';
 import { addError, isAsyncIterable, isReadResult } from './internals.js';
 
 /**
@@ -99,7 +99,9 @@ export function shapeResult(input: ShapeResultInput): void {
       // The cursor names the page's last row as read, which a row filter may
       // have just hidden: seal it rather than hand that row's values out.
       const filtering = (decision.obligations?.length ?? 0) > 0;
-      pg.nextCursor = filtering ? sealCursor(result.nextCursor) : result.nextCursor;
+      pg.nextCursor = filtering
+        ? sealCursor(result.nextCursor, cursorBinding(key, entry.params, ctx.identity?.id))
+        : result.nextCursor;
     }
     const paginationMap = envelope._pagination ?? {};
     paginationMap[key] = pg;

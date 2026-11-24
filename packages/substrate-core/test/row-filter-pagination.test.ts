@@ -14,6 +14,7 @@ type Thing = { id: number; owner: string; secret: string };
 /** A store of `rows` read in pages, filtered by an equality `where` before paging, as a dataset does. */
 function build(rows: Thing[]) {
   let reads = 0;
+  const starts: string[] = [];
   const registry = new Registry();
   registry.register('Thing', {
     kind: 'type',
@@ -29,6 +30,7 @@ function build(rows: Thing[]) {
     }),
     resolver: async (_ctx, args) => {
       reads++;
+      starts.push(String(args.params?.cursor ?? 'start'));
       const where = (args.params?.where ?? {}) as { secret?: { eq: string } };
       const matching = rows.filter(
         (r) => where.secret === undefined || r.secret === where.secret.eq
@@ -62,7 +64,7 @@ function build(rows: Thing[]) {
       page: res._pagination?.['app/Thing']
     };
   };
-  return { read, reads: () => reads };
+  return { read, reads: () => reads, starts, engine };
 }
 
 const mine = (id: number, secret = 'x'): Thing => ({ id, owner: 'me', secret });
@@ -130,4 +132,33 @@ it('stops after a bounded scan of hidden rows and lets the caller page on', asyn
     cursor = next.page?.hasMore ? next.page.nextCursor : undefined;
   }
   expect(found).toEqual([12_001]);
+});
+
+it('ends a full page on the last row shown, not on a hidden row after it', async () => {
+  const { read, starts } = build([mine(1), theirs(2), theirs(3), mine(4)]);
+  const first = await read({ limit: 1 });
+  expect(first.ids).toEqual([1]);
+  starts.length = 0;
+  const second = await read({ limit: 1, cursor: first.page?.nextCursor });
+  expect(second.ids).toEqual([4]);
+  // The store is asked to continue after row 1, the row the caller saw.
+  expect(starts[0]).toBe('1');
+});
+
+it('opens a cursor only for the read it was issued for', async () => {
+  const { read, engine } = build([mine(1, 'a'), theirs(2, 'a'), mine(3, 'a'), mine(4, 'b')]);
+  const first = await read({ where: { secret: { eq: 'a' } }, limit: 1 });
+  const cursor = first.page?.nextCursor;
+  expect((await read({ where: { secret: { eq: 'a' } }, limit: 1, cursor })).ids).toEqual([3]);
+  for (const params of [
+    { limit: 1, cursor },
+    { where: { secret: { eq: 'b' } }, limit: 1, cursor },
+    { where: { secret: { eq: 'a' } }, orderBy: [{ owner: 'asc' }], limit: 1, cursor }
+  ]) {
+    const res = await engine.query({
+      frame: { 'app/Thing': { params, fields: { id: true } } },
+      ctx: { identity: null }
+    });
+    expect(res.errors?.[0]?.code).toBe('invalid_cursor');
+  }
 });

@@ -42,7 +42,7 @@ import {
 import type { WalkResolvers } from '../filter/walk-validator.js';
 import { evaluatePolicy } from '../policy-evaluator.js';
 import { hopResolver, type WalkedType, walkedTypes } from '../walk-types.js';
-import { isSealedCursor, openCursor } from './cursor-seal.js';
+import { cursorBinding, isSealedCursor, openCursor } from './cursor-seal.js';
 import { type FilterGuardDeps, runFilterGuard } from './filter-guard.js';
 import {
   addError,
@@ -617,9 +617,12 @@ export class EntryGate {
     const cursor = args.params?.cursor;
     if (typeof cursor === 'string') {
       // Under a row filter only a sealed cursor is accepted: that is all this
-      // entry ever hands out.
+      // entry ever hands out. It opens only for the read and caller it was sealed for.
       const filtering = (decision.obligations?.length ?? 0) > 0;
-      const opened = filtering && !isSealedCursor(cursor) ? null : openCursor(cursor);
+      const opened =
+        filtering && !isSealedCursor(cursor)
+          ? null
+          : openCursor(cursor, cursorBinding(key, frame.params, ctx.identity?.id));
       if (opened === null) {
         addError(envelope, [key], 'cursor is not one this server issued', 'invalid_cursor');
         return null;
