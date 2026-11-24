@@ -16,12 +16,10 @@
  *     throw for a partial deny.
  *   - `mutate` is the same shape, run inside a single `dataset.withTransaction`
  *     (§5.3 / G1): if any resolver throws, every prior mutation in the frame
- *     rolls back and the promise rejects with that resolver's error. A
- *     resolver refusing with a `ResolverFrameError` rolls the frame back too:
- *     its error is kept and every other entry reports `frame_rolled_back`.
- *     Policy denials surface in `envelope.errors` without aborting — policy is
- *     an authz decision, not a substrate failure, so it does not trigger
- *     rollback.
+ *     rolls back and the promise rejects with that resolver's error. Any
+ *     refusal of an entry (outside the grant, denied by policy, invalid, or a
+ *     resolver's `ResolverFrameError`) rolls the frame back too: its error is
+ *     kept and every other single-frame entry reports `frame_rolled_back`.
  *   - G1 cross-substrate refusal: if a mutate's single-frame entries span more
  *     than one substrate, the engine returns `cross_tx_scope_refused` and
  *     calls NO resolvers. Namespaces sharing a substrate share one tx.
@@ -194,6 +192,18 @@ interface SlotResult {
   errors?: FrameErrors;
 }
 
+/** A frame entry whose where, selection or grouping can leave its own type. */
+function bridgedWalk(entry: FrameEntry): boolean {
+  const frame = entry as Record<string, unknown>;
+  if (walkGrammarPath(frame, { walkParams: false }) !== null) return true;
+  const params = frame.params;
+  return (
+    typeof params === 'object' &&
+    params !== null &&
+    ['aggregate', 'groupBy', 'having'].some((k) => Object.hasOwn(params, k))
+  );
+}
+
 function slotResultOf(scratch: PackEnvelope, key: string): SlotResult {
   const entry: SlotResult = {};
   if (key in scratch.data) entry.data = scratch.data[key];
@@ -263,6 +273,7 @@ import {
   NO_BRIDGES,
   type ParsedKey,
   parseQualifiedKey,
+  readsEveryNamespace,
   type StreamHandle,
   type StreamInput,
   type SubscribeInput,
@@ -714,6 +725,11 @@ export class Engine implements ActHandle {
     if (!nsGate.ok) {
       return { allow: false, reason: grantRefusal(ns, nsGate) };
     }
+    // Where auth is on, the mutate route admits no caller without an identity,
+    // whatever the mode; a probe has no route gate in front of it.
+    if (operation === 'mutate' && identity === null && probe?.authEnabled === true) {
+      return { allow: false, reason: 'a write needs an identity' };
+    }
     const ctx: RequestContext = {
       now: probe?.now ?? new Date(),
       headers: probe?.headers ?? {},
@@ -797,6 +813,18 @@ export class Engine implements ActHandle {
         this.#bridges.has(parsed.ns)
       ) {
         if (this.#refuseUngranted(envelope, key, parsed.ns, ctx.identity, 'query')) continue;
+        // The peer answers under the bridge's credential, and which namespaces
+        // a walk reaches there is not known here.
+        if (bridgedWalk(entry) && !readsEveryNamespace(ctx.identity)) {
+          addError(
+            envelope,
+            [key],
+            `a walk in a bridged query needs read on every namespace (op-key '${key}')`,
+            'bridge_walk_refused'
+          );
+          this.#metric('engine_bridge_walk_refused', { key });
+          continue;
+        }
         let bucket = bridgeBuckets.get(parsed.ns);
         if (bucket === undefined) {
           bucket = {};
@@ -2102,6 +2130,27 @@ export class Engine implements ActHandle {
       this.#metric('engine_unknown_name', { ns, name });
       return null;
     }
+
+    // The gate above judged the route's operation; the entry decides what it
+    // does. get<T> is registered as a mutation and is the one that only reads.
+    const reads = registryEntry.kind !== 'mutation' || registryEntry.verb === 'get';
+    if (operation === 'query' && !reads) {
+      // A write here would run with no transaction, unseen by subscribers.
+      addError(
+        envelope,
+        [key],
+        `cannot query mutation '${key}' — send it to mutate`,
+        'mutation_on_query'
+      );
+      this.#metric('engine_mutation_on_query', { key });
+      return null;
+    }
+    if (
+      operation === 'mutate' &&
+      reads &&
+      this.#refuseUngranted(envelope, key, ns, ctxBase.identity, 'query')
+    )
+      return null;
 
     // A by-filter mutation's `where` is a query's `where` on its target type.
     const filterTarget = operation === 'mutate' ? registryEntry.filterTarget : undefined;

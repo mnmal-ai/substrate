@@ -64,6 +64,28 @@ describe('Engine.evaluateWritePolicy', () => {
     ).toBe(true);
   });
 
+  it('refuses a write with no identity where auth is on, as the mutate route does', () => {
+    const registry = new Registry();
+    registry.register('Todo', { resolver });
+    const engine = makeEngine(registry);
+
+    expect(engine.evaluateWritePolicy('default', 'Todo', null, { authEnabled: true }).allow).toBe(
+      false
+    );
+    expect(engine.evaluateReadPolicy('default', 'Todo', null, { authEnabled: true }).allow).toBe(
+      true
+    );
+    // Auth off, or an in-process caller that states nothing: no route gate to mirror.
+    expect(engine.evaluateWritePolicy('default', 'Todo', null, { authEnabled: false }).allow).toBe(
+      true
+    );
+    expect(engine.evaluateWritePolicy('default', 'Todo', null).allow).toBe(true);
+    const agent = { id: 'a', kind: 'agent' as const, grants: { default: ['mutate'] } };
+    expect(engine.evaluateWritePolicy('default', 'Todo', agent, { authEnabled: true }).allow).toBe(
+      true
+    );
+  });
+
   it('fails closed on unknown namespace + unknown type, like its read twin', () => {
     const registry = new Registry();
     registry.register('Todo', { resolver });

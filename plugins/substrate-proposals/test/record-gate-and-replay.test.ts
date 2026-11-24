@@ -125,6 +125,44 @@ describe('proposal records', () => {
     expect(registry?.get('Fine')?.fields.r).toBeUndefined();
   });
 
+  it('never replace a mutation with a type on replay', async () => {
+    const ds = new MemoryDataset({ namespace: 'app' });
+    const str = { kind: 'scalar', type: 'string' };
+    await ds.write('TypeProposal', [
+      row({ id: 'ok', typeName: 'Fine', fieldsJson: JSON.stringify({ t: str }) }),
+      row({
+        id: 'sized',
+        typeName: 'updateFine',
+        fieldsJson: JSON.stringify({ t: str }),
+        expectedSize: 'large'
+      })
+    ]);
+    await ds.write('FieldProposal', [
+      row({
+        id: 'f1',
+        targetType: 'createFine',
+        fieldName: 'x',
+        fieldSpecJson: JSON.stringify(str)
+      }),
+      row({
+        id: 'f2',
+        targetType: 'propose_type',
+        fieldName: 'x',
+        fieldSpecJson: JSON.stringify(str)
+      })
+    ]);
+    const { engine } = await boot(ds);
+    const registry = engine.registryFor('app');
+    for (const name of ['createFine', 'updateFine', 'deleteFine', 'getFine']) {
+      expect(registry?.get(name)?.kind).toBe('mutation');
+    }
+    expect(registry?.get('Fine')?.kind).toBe('type');
+    for (const reg of [registry, engine.registryFor('_system_proposals')]) {
+      const entry = reg?.get('propose_type');
+      if (entry !== undefined) expect(entry.kind).toBe('mutation');
+    }
+  });
+
   it('never replay a namespace propose_namespace would refuse', async () => {
     const control = new MemoryDataset({ namespace: '_system_proposals' });
     await control.write('NamespaceProposal', [

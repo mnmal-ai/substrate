@@ -99,6 +99,13 @@ describe.skipIf(!isPgGated)('LexicalStore parity (memory vs pg)', () => {
     expect(hits[0]?.row).toEqual({ id: 'holiday' });
   });
 
+  it('pg hit rows carry the key column id when the stored body has none', async () => {
+    // A row written through the dataset keeps `id` in the key column only.
+    await putRows(sql, [{ namespace: NS, type: TYPE, id: 'holiday', body: { topic: 'trip' } }]);
+    const hits = await pg.search({ namespace: NS, type: TYPE, query: 'Sweden', k: 5 });
+    expect(hits[0]?.row).toEqual({ id: 'holiday', topic: 'trip' });
+  });
+
   it('adds the row shortId to the body in pg', async () => {
     await sql`INSERT INTO row_ids (namespace, type, id) VALUES (${NS}, ${TYPE}, 'holiday') ON CONFLICT DO NOTHING`;
     await sql`INSERT INTO short_ids (namespace, type, short_id, row_id) VALUES (${NS}, ${TYPE}, 42, 'holiday') ON CONFLICT DO NOTHING`;

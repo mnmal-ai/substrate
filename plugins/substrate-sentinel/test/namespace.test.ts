@@ -1,7 +1,7 @@
-import type { PackEnvelope, SubstrateResponse } from '@mnmal-ai/substrate/sdk';
+import type { PackEnvelope, Policy, SubstrateResponse } from '@mnmal-ai/substrate/sdk';
 import { compose, MemoryDataset, MemorySubstrateServer } from '@mnmal-ai/substrate/testing';
 import { afterEach, describe, expect, it } from 'vitest';
-import { SENTINEL_TYPE_NAMES } from '../src/namespace.js';
+import { buildSentinelNamespace, SENTINEL_TYPE_NAMES } from '../src/namespace.js';
 import { buildSentinelForTest } from './_helpers.js';
 
 const NS = 'sentinel';
@@ -28,6 +28,7 @@ interface FederatedSchemaShape {
 
 async function setup(): Promise<{
   server: MemorySubstrateServer;
+  sentinelDataset: MemoryDataset;
   stop: () => Promise<void>;
 }> {
   const server = new MemorySubstrateServer();
@@ -46,6 +47,7 @@ async function setup(): Promise<{
   await server.start();
   return {
     server,
+    sentinelDataset,
     stop: async (): Promise<void> => {
       await composed.stop();
     }
@@ -84,34 +86,42 @@ describe('buildSentinelNamespace', () => {
     }
   });
 
-  it('round-trips createCoordinator and reads it back via the Coordinator list', async () => {
-    const { server, stop } = await setup();
+  it('allows a non-admin to read and refuses it a write, at dispatch and in a write probe', () => {
+    const policy = buildSentinelNamespace(NS).types?.Coordinator?.policy as Policy | undefined;
+    const base = {
+      identity: { id: 'peer', kind: 'agent' as const, grants: { [NS]: ['read', 'mutate'] } },
+      namespace: NS,
+      now: new Date(),
+      headers: {},
+      meta: {}
+    };
+    const allow = (ctx: object) => policy?.({ ...base, ...ctx } as never, {}).allow;
+    expect(allow({ operation: 'query', entry: 'Coordinator' })).toBe(true);
+    expect(allow({ operation: 'mutate', entry: 'getCoordinator', verb: 'get' })).toBe(true);
+    expect(allow({ operation: 'mutate', entry: 'deleteCoordinator', verb: 'delete' })).toBe(false);
+    expect(allow({ operation: 'query', entry: 'deleteCoordinator', verb: 'delete' })).toBe(false);
+    // The engine's write probe names the type itself.
+    expect(allow({ operation: 'mutate', entry: 'Coordinator', verb: 'update' })).toBe(false);
+    expect(allow({ operation: 'mutate', entry: 'Coordinator' })).toBe(false);
+  });
+
+  it('reads a stored coordinator back via the Coordinator list', async () => {
+    const { server, stop, sentinelDataset } = await setup();
     cleanup = stop;
 
-    const create = await server.inject({
-      method: 'POST',
-      path: '/substrate/v1/mutate',
-      headers: { 'content-type': 'application/json' },
-      body: Buffer.from(
-        JSON.stringify({
-          [`${NS}/createCoordinator`]: {
-            params: {
-              name: 'home',
-              url: 'http://localhost:3200',
-              namespaces: 'family,home',
-              status: 'online',
-              lastHeartbeat: '2026-04-19T00:00:00Z',
-              registeredAt: '2026-04-19T00:00:00Z',
-              version: '1.0.0'
-            },
-            fields: { id: true, name: true }
-          }
-        })
-      )
-    });
-    expect(create.status).toBe(200);
-    const createdEnv = jsonBody<PackEnvelope>(create);
-    expect(createdEnv.errors).toBeUndefined();
+    // Coordinator rows are written by the register route; seed the store directly.
+    await sentinelDataset.write('Coordinator', [
+      {
+        id: '00000000-0000-4000-8000-0000000000aa',
+        name: 'home',
+        url: 'http://localhost:3200',
+        namespaces: 'family,home',
+        status: 'online',
+        lastHeartbeat: '2026-04-19T00:00:00Z',
+        registeredAt: '2026-04-19T00:00:00Z',
+        version: '1.0.0'
+      }
+    ]);
 
     const list = await server.inject({
       method: 'POST',

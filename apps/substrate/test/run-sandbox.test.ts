@@ -1,3 +1,8 @@
+import { fork } from 'node:child_process';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { SubstrateClient } from '@mnmal-ai/substrate-client';
 import type { PackEnvelope } from '@mnmal-ai/substrate-types';
 import { describe, expect, it } from 'vitest';
@@ -156,11 +161,64 @@ describe('runSandboxed', () => {
     expect(r).toMatchObject({ ok: true, result: 0 });
   });
 
+  it('gives the script no way to signal a process', async () => {
+    // Signal 0 only probes, so a script that could send it could send any other.
+    // `_debugProcess` sends a real SIGUSR1, so it is aimed at a pid nothing holds.
+    const r = await run(
+      `export default async (s) => {
+        const { pid, nobody } = s.args;
+        const calls = [
+          () => process.kill(pid, 0),
+          () => process._kill(pid, 0),
+          async () => (await import('node:process')).kill(pid, 0),
+          () => process._debugProcess(nobody),
+          () => process._debugEnd(nobody),
+          () => process.binding('process_wrap'),
+          () => process._linkedBinding('process_wrap'),
+          () => process.dlopen({ exports: {} }, '/nonexistent.node')
+        ];
+        const out = [];
+        for (const call of calls) {
+          try { await call(); out.push('sent'); } catch (e) { out.push(e.message); }
+        }
+        return out;
+      };`,
+      { args: { pid: process.pid, nobody: 4_194_303 } }
+    );
+    expect(r).toMatchObject({
+      ok: true,
+      result: Array(8).fill('a script cannot signal a process')
+    });
+  });
+
   it('kills a script that runs past the timeout', async () => {
     const t0 = performance.now();
     const r = await run(`export default async () => { for (;;) {} };`, { timeoutMs: 500 });
     expect(r).toMatchObject({ ok: false, error: 'script timed out after 500 ms' });
     expect(performance.now() - t0).toBeLessThan(5000);
+  });
+
+  it('refuses to run a script when the permission model is not active', async () => {
+    // The runner started without the flags, as a runtime that ignores them would start it.
+    const runner = fileURLToPath(new URL('../src/mcp/script-runner.ts', import.meta.url));
+    const dir = mkdtempSync(join(tmpdir(), 'substrate-run-test-'));
+    const marker = join(dir, 'ran');
+    const script = join(dir, 'script.mjs');
+    writeFileSync(
+      script,
+      "import { writeFileSync } from 'node:fs'; export default async (s) => writeFileSync(s.args.marker, '1');"
+    );
+    const child = fork(runner, [], { env: {}, stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
+    const done = await new Promise<{ ok: boolean; error?: string }>((resolve) => {
+      child.on('message', (m: { type: string; ok: boolean; error?: string }) => {
+        if (m.type === 'done') resolve(m);
+      });
+      child.send({ type: 'start', script, kid: null, mode: 'read', args: { marker } });
+    });
+    child.kill();
+    expect(done).toMatchObject({ ok: false, error: expect.stringContaining('not active') });
+    expect(existsSync(marker)).toBe(false);
+    rmSync(dir, { recursive: true, force: true });
   });
 
   it('reports a script without a default export', async () => {

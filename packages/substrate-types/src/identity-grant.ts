@@ -76,6 +76,28 @@ export function coversNamespace(resolved: IdentityGrant | null, ns: string): boo
 }
 
 /** A per-frame grant check's verdict, naming which dimension refused. */
+/**
+ * True when the identity holds `capability` in every namespace: a `*` entry
+ * holding it that no explicit entry narrows. An explicit entry beats the
+ * wildcard, so `*` alone does not answer for a namespace the grant also names.
+ */
+export function holdsEverywhere(
+  identity: GrantBearing | null | undefined,
+  capability: string
+): boolean {
+  const resolved = grantOf(identity);
+  if (resolved === null || !Object.hasOwn(resolved, '*')) return false;
+  return Object.keys(resolved).every((ns) => resolved[ns]?.includes(capability));
+}
+
+/**
+ * True when the identity may read every namespace: no grant claim at all, or
+ * `read` held everywhere.
+ */
+export function readsEveryNamespace(identity: GrantBearing | null | undefined): boolean {
+  return grantOf(identity) === null || holdsEverywhere(identity, 'read');
+}
+
 export type GrantVerdict =
   | { ok: true }
   | { ok: false; reason: 'namespace' | 'capability'; required?: string };
