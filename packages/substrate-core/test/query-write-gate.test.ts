@@ -18,6 +18,7 @@ function build() {
   entry('Note');
   entry('getNote', { kind: 'mutation', verb: 'get' });
   entry('createNote', { kind: 'mutation', verb: 'create' });
+  entry('updateNote', { kind: 'mutation', verb: 'update' });
   entry('deleteNote', { kind: 'mutation', verb: 'delete' });
   entry('archiveNotes', { kind: 'mutation' });
   const datasets = new MemoryDatasetRegistry();
@@ -69,10 +70,33 @@ describe('mutate route requires read for reading entries', () => {
     });
   }
 
-  it('still runs a write for a mutate-only key', async () => {
+  it('still runs a create and a custom mutation for a mutate-only key', async () => {
     const { engine, ran } = build();
-    const res = await engine.mutate({ frame: frame('ns/createNote'), ctx: ctxOf(writer) });
+    const res = await engine.mutate({
+      frame: { ...frame('ns/createNote'), ...frame('ns/archiveNotes') },
+      ctx: ctxOf(writer)
+    });
     expect(res.errors ?? []).toEqual([]);
-    expect(ran).toEqual(['createNote']);
+    expect(ran).toEqual(['createNote', 'archiveNotes']);
+  });
+
+  it('refuses an update or delete for a mutate-only key, single or batched', async () => {
+    for (const key of ['ns/updateNote', 'ns/deleteNote']) {
+      const one = { params: {}, fields: { id: true } };
+      for (const value of [one, [one]]) {
+        const { engine, ran } = build();
+        const res = await engine.mutate({ frame: { [key]: value }, ctx: ctxOf(writer) });
+        expect(res.errors?.[0]?.code).toBe('unauthorized_capability');
+        expect(ran).toEqual([]);
+      }
+    }
+  });
+
+  it('runs an update for a key holding read and mutate', async () => {
+    const { engine, ran } = build();
+    const both: Identity = { id: 'both', kind: 'agent', grants: { ns: ['read', 'mutate'] } };
+    const res = await engine.mutate({ frame: frame('ns/updateNote'), ctx: ctxOf(both) });
+    expect(res.errors ?? []).toEqual([]);
+    expect(ran).toEqual(['updateNote']);
   });
 });

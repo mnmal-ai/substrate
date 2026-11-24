@@ -187,7 +187,7 @@ kernel: substrate-recall
 plugin-dir: /home/you/my-substrate
 ```
 
-The `coordinators:` and `kernel:` lines list the plugins that loaded; here, only the two built-ins. With auth off the server listens on `127.0.0.1` unless `HOST` says otherwise; the Docker image sets `HOST=0.0.0.0` and opts in with `SUBSTRATE_ALLOW_UNAUTHENTICATED_HOST=1`.
+The `coordinators:` and `kernel:` lines list the plugins that loaded; here, only the two built-ins. With auth off the server listens on `127.0.0.1` unless `HOST` says otherwise; the Docker image sets `HOST=0.0.0.0`, and the repository's compose file opts in with `SUBSTRATE_ALLOW_UNAUTHENTICATED_HOST=1`.
 
 Then run the checks in [Verify](#verify) above.
 
