@@ -473,9 +473,12 @@ export class EntryGate {
       this.#metric('engine_mutation_on_query', { key });
       return null;
     }
+    // An update or delete answers with the row, or with whether and which rows
+    // matched, so it reads. A create returns only what its caller sent.
+    const readsBack = registryEntry.verb === 'update' || registryEntry.verb === 'delete';
     if (
       operation === 'mutate' &&
-      reads &&
+      (reads || readsBack) &&
       this.refuseUngranted(envelope, key, ns, ctxBase.identity, 'query')
     )
       return null;
