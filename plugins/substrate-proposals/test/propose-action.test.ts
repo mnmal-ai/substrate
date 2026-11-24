@@ -504,7 +504,7 @@ describe('propose_action (memory)', () => {
     expect(await records(w)).toEqual([]);
   });
 
-  it('lets a lapsed word free its slot but keeps its name reserved', async () => {
+  it('lets a lapsed word free its slot and its name', async () => {
     for (let i = 1; i <= MAX_PENDING_PER_PROPOSER; i++) {
       expect(await as('agent-a', `define Ticket.word${i} status=open`)).toMatchObject({ ok: true });
     }
@@ -515,10 +515,14 @@ describe('propose_action (memory)', () => {
       refusal: { token: 'word1' }
     });
     expect(await as('agent-a', 'define Ticket.wordx status=open')).toMatchObject({ ok: true });
-    expect(await as('agent-c', 'define Ticket.word1 status=open')).toMatchObject(taken);
-    // Its proposer revives it by defining it again.
+    // Its proposer revives it by defining it again, while nobody else has taken the name.
     expect(await as('agent-a', 'define Ticket.word1 status=open')).toMatchObject({ ok: true });
     expect(await as('agent-a', 'word1 Ticket #1')).toMatchObject({ ok: true });
+    expect(await as('agent-c', 'define Ticket.word1 status=open')).toMatchObject(taken);
+    // Another proposer takes a name whose word lapsed, and then it is theirs.
+    expect(await as('agent-c', 'define Ticket.word2 status=open')).toMatchObject({ ok: true });
+    expect(await as('agent-c', 'word2 Ticket #1')).toMatchObject({ ok: true });
+    expect(await as('agent-a', 'define Ticket.word2 status=open')).toMatchObject(taken);
   });
 
   it('stores nothing on a dry-run define', async () => {

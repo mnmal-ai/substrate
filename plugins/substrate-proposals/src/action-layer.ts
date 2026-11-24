@@ -321,18 +321,22 @@ export class ProposalActionLayer implements ActionLayer {
   }
 
   /**
-   * Who holds `name` on `qualifiedType`: nobody, `proposer` (pending, lapsed
-   * or not), someone else (pending, or promoted for everyone), or nobody ever
-   * again.
+   * Who holds `name` on `qualifiedType` at `now`: nobody, `proposer` (pending,
+   * lapsed or not), someone else (pending and not lapsed, or promoted for
+   * everyone), or nobody ever again. Another proposer's lapsed word holds nothing.
    */
-  nameState(qualifiedType: string, name: string, proposer: string): NameState {
+  nameState(qualifiedType: string, name: string, proposer: string, now: Date): NameState {
     const key = `${qualifiedType}.${name}`;
     if (this.#closed.has(key)) return 'closed';
     if (this.#promoted.get(qualifiedType)?.has(name) === true) return 'taken';
+    let own = false;
     for (const [who, words] of this.#pending) {
-      if (words.has(key)) return who === proposer ? 'own' : 'taken';
+      const word = words.get(key);
+      if (word === undefined) continue;
+      if (who === proposer) own = true;
+      else if (!isLapsed(word.row, now)) return 'taken';
     }
-    return 'free';
+    return own ? 'own' : 'free';
   }
 
   /** `proposer`'s pending words in `ns` that have not lapsed by `now`. */

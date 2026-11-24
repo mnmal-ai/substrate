@@ -262,13 +262,13 @@ export function makeProposeActionResolver(
           limit: 1000
         });
         for (const row of rows) layer.apply(row);
-        const state = layer.nameState(qualified, name, proposer);
+        const now = deps.now();
+        const state = layer.nameState(qualified, name, proposer, now);
         if (state === 'taken') throw taken('is taken by another pending or published word');
         if (state === 'closed') {
           throw taken('was vetoed, retired or superseded by code, and stays closed');
         }
 
-        const now = deps.now();
         const own = rows.find(
           (r) => r.proposedBy === proposer && r.status === 'pending' && r.archived !== true
         );

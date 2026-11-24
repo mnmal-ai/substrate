@@ -443,10 +443,17 @@ describe('recall/Cluster + recall/ClusterMember — read-policy gate', () => {
     ).rejects.toMatchObject({ code: 'policy_denied' });
   });
 
-  it('labelCluster succeeds when the caller can see the cluster through at least one member scope', async () => {
+  it('labelCluster is denied when the caller reads some members of the cluster but not all', async () => {
     const surface = await seededWithPolicy((ns, type) => ({
       allow: !(ns === 'cortext' && type === 'Decision')
     }));
+    await expect(
+      surface.mutations.labelCluster.resolver(ctx, { params: { id: 'cA', label: 'renamed' } })
+    ).rejects.toMatchObject({ code: 'policy_denied' });
+  });
+
+  it('labelCluster succeeds when the caller reads every member', async () => {
+    const surface = await seededWithPolicy(() => ({ allow: true }));
     const row = await surface.mutations.labelCluster.resolver(ctx, {
       params: { id: 'cA', label: 'renamed' }
     });

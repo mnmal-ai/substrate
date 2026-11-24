@@ -135,7 +135,7 @@ A `'*'` grant covers `_system_proposals` too. A key granted `'*'` with `mutate` 
 - The proposer may define the same name again. An identical definition changes nothing and keeps its count. A different one replaces the old and resets the count to zero, because use of one meaning is no evidence for another.
 - A pending word is usable by its proposer only. Others get the usual unknown-action refusal.
 - A published word cannot be redefined. A vetoed or retired name stays closed on its type.
-- A word unused for 30 days (from its last counted use, or from the proposal) lapses and frees its slot. Its name stays reserved to its proposer, who revives it by defining it again.
+- A word unused for 30 days (from its last counted use, or from the proposal) lapses and frees its slot. Its name is free again: its proposer revives it by defining it again, unless another proposer has defined that name first.
 - If code later declares the same name, code wins at boot and the proposal is marked superseded.
 
 ### Evidence and promotion
