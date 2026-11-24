@@ -4,9 +4,10 @@
  */
 
 import { MemoryDataset, MemoryDatasetRegistry } from '@mnmal-ai/substrate-dataset-memory';
-import type { WsResponseFrame } from '@mnmal-ai/substrate-types';
+import type { Identity, WsResponseFrame } from '@mnmal-ai/substrate-types';
 import { expect, it } from 'vitest';
 import {
+  MAX_ANONYMOUS_SUBSCRIPTIONS_PER_TYPE,
   MAX_SUBSCRIBE_LIST_VALUES,
   MAX_SUBSCRIBE_PREDICATES,
   MAX_SUBSCRIPTIONS_PER_TYPE
@@ -23,14 +24,14 @@ function boot() {
     datasets,
     edges: new MemoryEdgesStore({ now: () => new Date() })
   });
-  const subscribe = async (where?: unknown) => {
+  const subscribe = async (where?: unknown, identity: Identity | null = null) => {
     const frames: WsResponseFrame[] = [];
     await engine.subscribe({
       id: 's',
       frame: {
         'app/Thing': { ...(where !== undefined ? { params: { where } } : {}), fields: { id: true } }
       },
-      ctx: { identity: null },
+      ctx: { identity },
       onFrame: (f) => {
         frames.push(f);
       }
@@ -57,9 +58,15 @@ it('admits a list at the value cap and refuses one past it', async () => {
   expect(await subscribe(list(MAX_SUBSCRIBE_LIST_VALUES + 1))).toBe('invalid_logical');
 });
 
-it('refuses a subscription once its type holds the store-wide maximum', async () => {
+it('keeps half of the subscription slots on a type for callers with an identity', async () => {
   const { engine, subscribe } = boot();
-  for (let i = 0; i < MAX_SUBSCRIPTIONS_PER_TYPE; i++) expect(await subscribe()).toBe('open');
+  const signed = { id: 'a', kind: 'agent', grants: { app: ['read'] } } as Identity;
+  const anonymousCap = MAX_ANONYMOUS_SUBSCRIPTIONS_PER_TYPE;
+  for (let i = 0; i < anonymousCap; i++) expect(await subscribe()).toBe('open');
   expect(await subscribe()).toBe('too_many_subscriptions');
+  for (let i = anonymousCap; i < MAX_SUBSCRIPTIONS_PER_TYPE; i++) {
+    expect(await subscribe(undefined, signed)).toBe('open');
+  }
+  expect(await subscribe(undefined, signed)).toBe('too_many_subscriptions');
   expect(engine.activeSubscriptionCount()).toBe(MAX_SUBSCRIPTIONS_PER_TYPE);
 });
