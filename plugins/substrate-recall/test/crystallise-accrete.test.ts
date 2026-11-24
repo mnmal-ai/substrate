@@ -90,6 +90,31 @@ describe('handleCrystallise — accrete', () => {
     expect(members[0]?.similarity).toBeGreaterThan(deps.config.accretionThreshold);
   });
 
+  it("skips a cluster holding a member in a scope the caller's read policy denies", async () => {
+    await clusters.attachMembers([
+      {
+        id: 'seed-member',
+        clusterId: 'cA',
+        ref: { namespace: 'other', type: 'Secret', id: 's1' },
+        origin: 'formation',
+        similarity: 1,
+        now: new Date('2026-08-06T11:00:00Z')
+      }
+    ]);
+    deps.checkReadPolicy = (ns): { allow: boolean } => ({ allow: ns === 'cortext' });
+    deps.embeddings = fakeEmbeddings([candidate('x', [0.95, 0.05, 0])]);
+    const out = await handleCrystallise({ mode: 'accrete', select: SELECT }, deps);
+
+    expect(out.membersAttached).toBe(0);
+    expect(out.clusters).toEqual([]);
+    expect((await clusters.listMembers('cA')).map((m) => m.memberId)).toEqual(['s1']);
+
+    // A cluster whose members the caller reads still accretes.
+    deps.embeddings = fakeEmbeddings([candidate('y', [0.05, 0.95, 0])]);
+    const ok = await handleCrystallise({ mode: 'accrete', select: SELECT }, deps);
+    expect(ok.clusters.map((c) => c.id)).toEqual(['cB']);
+  });
+
   it('leaves a row unclaimed when nothing is close enough', async () => {
     deps.embeddings = fakeEmbeddings([candidate('far', [0, 0, 1])]);
     const out = await handleCrystallise({ mode: 'accrete', select: SELECT }, deps);
