@@ -377,7 +377,7 @@ describe('autoCRUD batch resolvers: memory vs pg through Engine', () => {
     });
   });
 
-  it('updateBatch on a row-policy type hides a row the caller cannot read, as sequential does', async () => {
+  it('updateBatch on a row-policy type answers a row the caller cannot read as a missing one', async () => {
     const hide = rowPolicy(
       (c, r) => (r as { title?: string }).title !== `hidden from ${c.identity?.id}`
     );
@@ -395,8 +395,18 @@ describe('autoCRUD batch resolvers: memory vs pg through Engine', () => {
         { id: 'i001', title: 'bob 1' },
         { id: 'i002', title: 'bob 2' }
       ];
+      // In `a` the second row is hidden from bob; in `b` the second id names no row.
       const env = a.strip(await a.mutate('updateItem', ups, 'bob'));
-      expect(env.data.updateItem).toEqual(await b.sequential('updateItem', ups, 'bob'));
+      const missing = b.strip(
+        await b.mutate(
+          'updateItem',
+          ups.map((u) => (u.id === 'i001' ? { ...u, id: 'i00x' } : u)),
+          'bob'
+        )
+      );
+      const codes = (e: typeof env) => e.errors.map((x) => [x.code, x.path]);
+      expect(codes(env)).toEqual(codes(missing));
+      expect(env.errors.map((x) => x.code)).toContain('not_found');
       const dels = [{ id: 'i001' }, { id: 'i002' }];
       const del = a.strip(await a.mutate('deleteItem', dels, 'bob'));
       expect(del.data.deleteItem).toEqual(await b.sequential('deleteItem', dels, 'bob'));

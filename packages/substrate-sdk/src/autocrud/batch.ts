@@ -387,10 +387,10 @@ export function updateBatchResolver(
     }
     const patches: Array<Patch | undefined> = [];
     for (let i = 0; refusal.live(i); i++) {
-      if (hidden[i]) continue;
       refusal.check(i, () => {
         const { id, params } = prepareUpdate(typeName, list[i]?.params, fields);
-        const target = targets[i] ?? null;
+        // A row the caller cannot read answers as a missing one.
+        const target = hidden[i] ? null : (targets[i] ?? null);
         if (target === null) throw updateNotFound(typeName, id);
         patches[i] = { i, id, params, target };
       });

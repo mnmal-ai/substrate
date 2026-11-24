@@ -332,7 +332,7 @@ describe('autoCRUD batch resolvers (memory, through Engine)', () => {
     expect((await allRows(s.dataset, 'Item'))[0]?.title).toBe('item 0');
   });
 
-  it('updateBatch on a row-policy type hides a row the caller cannot read, as sequential does', async () => {
+  it('updateBatch on a row-policy type answers a row the caller cannot read as a missing one', async () => {
     const mine = rowPolicy(
       (c, r) => (r as { title?: string }).title !== `hidden from ${c.identity?.id}`
     );
@@ -349,11 +349,16 @@ describe('autoCRUD batch resolvers (memory, through Engine)', () => {
       { id: 'i001', title: 'bob 1' },
       { id: 'i002', title: 'bob 2' }
     ];
-    const env = await a.mutate('updateItem', ups, 'bob');
-    const seq = await b.sequential('updateItem', ups, 'bob');
-    expect(env.errors).toBeUndefined();
-    expect(env.data['app/updateItem']).toEqual(seq);
-    expect((env.data['app/updateItem'] as unknown[])[1] ?? null).toBeNull();
+    // In `a` the second row is hidden from bob; in `b` the second id names no row.
+    const hidden = await a.mutate('updateItem', ups, 'bob');
+    const missing = await b.mutate(
+      'updateItem',
+      ups.map((u) => (u.id === 'i001' ? { ...u, id: 'i00x' } : u)),
+      'bob'
+    );
+    const codes = (env: typeof hidden) => env.errors?.map((e) => [e.code, e.path]);
+    expect(codes(hidden)).toEqual(codes(missing));
+    expect(hidden.errors?.some((e) => e.code === 'not_found')).toBe(true);
     expect(await allRows(a.dataset, 'Item')).toEqual(await allRows(b.dataset, 'Item'));
 
     const del = await a.mutate('deleteItem', [{ id: 'i001' }, { id: 'i002' }], 'bob');

@@ -13,7 +13,8 @@ import type {
   FieldDefCrossRef,
   Id,
   Identity,
-  ResolverArgs
+  ResolverArgs,
+  Row
 } from '@mnmal-ai/substrate-types';
 import {
   BatchElementError,
@@ -102,7 +103,7 @@ export async function assertCrossRefTargetsExistMany(
     def.ns === fromNs ? args.dataset : args.resolveDataset?.(def.ns);
 
   // Distinct values per target (ns, type), each group probed once.
-  const groups = new Map<string, { ds: Dataset; type: string; ids: Set<Id> }>();
+  const groups = new Map<string, { ds: Dataset; ns: string; type: string; ids: Set<Id> }>();
   for (const { fieldName, def } of enforced) {
     if (unreadable.has(fieldName)) continue;
     const ds = targetOf(def);
@@ -110,7 +111,7 @@ export async function assertCrossRefTargetsExistMany(
     const key = `${def.ns}\u0000${def.type}`;
     let group = groups.get(key);
     if (group === undefined) {
-      group = { ds, type: def.type, ids: new Set() };
+      group = { ds, ns: def.ns, type: def.type, ids: new Set() };
       groups.set(key, group);
     }
     for (let i = 0; i < values.length; i++) {
@@ -119,8 +120,17 @@ export async function assertCrossRefTargetsExistMany(
     }
   }
   const existing = new Map<string, Set<string>>();
-  for (const [key, { ds, type, ids }] of groups) {
-    existing.set(key, await existingIds(ds, type, [...ids]));
+  for (const [key, { ds, ns, type, ids }] of groups) {
+    const readable = args.readableRows;
+    existing.set(
+      key,
+      await existingIds(
+        ds,
+        type,
+        [...ids],
+        readable === undefined ? undefined : (rows) => readable(ns, type, rows)
+      )
+    );
   }
 
   for (let i = 0; i < values.length; i++) {
@@ -177,14 +187,24 @@ function readRefusal(
   );
 }
 
-/** The inputs naming a live row: by raw id, else as a short id. */
-async function existingIds(ds: Dataset, type: string, inputs: Id[]): Promise<Set<string>> {
+/**
+ * The inputs naming a live row the caller may read: by raw id, else as a short
+ * id. `readable` keeps the rows the caller's read of the target type would
+ * show, so a hidden row answers as a missing one.
+ */
+async function existingIds(
+  ds: Dataset,
+  type: string,
+  inputs: Id[],
+  readable?: (rows: Row[]) => Row[]
+): Promise<Set<string>> {
   const found = new Set<string>();
   if (inputs.length === 0) return found;
+  const shown = readable ?? ((rows: Row[]): Row[] => rows);
   // Locked first, so a concurrent delete of a target either waits for this
   // write or has settled before the read below.
   await ds.lockShared?.(type, inputs);
-  for (const r of (await ds.read(type, { ids: inputs, includeDeleted: false })).rows) {
+  for (const r of shown((await ds.read(type, { ids: inputs, includeDeleted: false })).rows)) {
     found.add(String(r.id));
   }
   const shortOf = new Map<number, string[]>();
@@ -198,7 +218,17 @@ async function existingIds(ds: Dataset, type: string, inputs: Id[]): Promise<Set
   }
   if (shortOf.size === 0) return found;
   const bound = await ds.resolveShortIds(type, [...shortOf.keys()]);
-  for (const shortId of bound.keys()) {
+  // A short id resolves for hidden rows too, so the rows it names are read and shown the same way.
+  const visible =
+    readable === undefined || bound.size === 0
+      ? undefined
+      : new Set(
+          readable(
+            (await ds.read(type, { ids: [...bound.values()], includeDeleted: false })).rows
+          ).map((r) => String(r.id))
+        );
+  for (const [shortId, id] of bound) {
+    if (visible !== undefined && !visible.has(String(id))) continue;
     for (const input of shortOf.get(shortId) ?? []) found.add(input);
   }
   return found;
