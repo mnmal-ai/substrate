@@ -729,3 +729,29 @@ export function normaliseToRows(result: Row | Row[] | ReadResult | null): Row[] 
   }
   return [result as Row];
 }
+
+export function buildParsedKeyCache(keys: string[]): Map<string, ParsedKey | null> {
+  const parsedByKey = new Map<string, ParsedKey | null>();
+  for (const key of keys) {
+    parsedByKey.set(key, parseQualifiedKey(key));
+  }
+  return parsedByKey;
+}
+
+/** A request context without its namespace, as `caller` supplied it for `operation`. */
+export function buildContext(
+  caller: Partial<RequestContext>,
+  operation: 'query' | 'mutate'
+): Omit<RequestContext, 'namespace'> {
+  // namespace is filled per-entry by the entry gate. Caller-supplied namespace /
+  // operation are ignored — the engine is authoritative for both.
+  const base: Omit<RequestContext, 'namespace'> = {
+    identity: caller.identity ?? null,
+    operation,
+    now: caller.now ?? new Date(),
+    headers: caller.headers ?? {},
+    meta: caller.meta ?? {}
+  };
+  if (caller.clientIp !== undefined) base.clientIp = caller.clientIp;
+  return base;
+}

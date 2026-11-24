@@ -155,7 +155,7 @@ export function partitionMutateByShape(
  *     than one substrate. Caller emits the top-level error and short-circuits.
  *   - `kind: 'zero_datasets'` — no key resolved to a dataset (every entry is
  *     unqualified, has an unknown ns, or names a virtual namespace).
- *     Caller dispatches via the per-key fallback so each `#runEntry` invocation
+ *     Caller dispatches via the per-key fallback so each `runEntry` invocation
  *     either surfaces its own error code (unresolvable keys) or dispatches the
  *     virtual resolver with no tx.
  *   - `kind: 'single_dataset'` — exactly one distinct dataset under one
