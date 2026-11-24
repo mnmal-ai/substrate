@@ -16,7 +16,13 @@ import type {
   SubstrateRequest,
   SubstrateResponse
 } from '@mnmal-ai/substrate-types';
-import { allCapabilities, confersAnywhere, grantedIn, grantOf } from '@mnmal-ai/substrate-types';
+import {
+  allCapabilities,
+  confersAnywhere,
+  grantedIn,
+  grantOf,
+  holdsEverywhere
+} from '@mnmal-ai/substrate-types';
 import {
   type AuthConfig,
   authenticateBearer,
@@ -265,6 +271,10 @@ export function wrapPluginRouter(
  * route gate asks whether admin is held anywhere; a route that acts on one
  * named namespace wraps its handler in this as well. A body with no string
  * `namespace` passes through, so the handler gives its own malformed-body answer.
+ *
+ * A `_system_*` namespace holds a plugin's control records for every
+ * namespace, each gated on its own namespace's admin, so acting on it needs
+ * `adminCap` held store-wide.
  */
 export function withAdminInBodyNamespace(handler: HttpHandler, adminCap: string): HttpHandler {
   return async (req) => {
@@ -275,12 +285,17 @@ export function withAdminInBodyNamespace(handler: HttpHandler, adminCap: string)
       return handler(req);
     }
     if (typeof ns !== 'string') return handler(req);
-    if (grantedIn(grantOf(req.identity ?? null), ns).includes(adminCap)) return handler(req);
+    const identity = req.identity ?? null;
+    const storeWide = ns.startsWith('_system_');
+    const held = storeWide
+      ? holdsEverywhere(identity, adminCap)
+      : grantedIn(grantOf(identity), ns).includes(adminCap);
+    if (held) return handler(req);
     return {
       status: 403,
       headers: { 'content-type': 'application/json' },
       body: Buffer.from(
-        JSON.stringify({ code: 'forbidden', required: `${ns}:${adminCap}` }),
+        JSON.stringify({ code: 'forbidden', required: `${storeWide ? '*' : ns}:${adminCap}` }),
         'utf8'
       )
     };

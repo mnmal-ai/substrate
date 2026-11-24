@@ -63,6 +63,9 @@ import {
 
 export { clearExtensionOperators, getExtensionOperator, registerExtensionOperator };
 
+/** Extension-operator clauses one `where` may hold, across all its AND/OR/NOT branches. */
+const MAX_EXTENSION_OPS = 4;
+
 export type FilterErrorCode =
   | 'unknown_field'
   | 'unknown_operator'
@@ -806,6 +809,16 @@ function validateWhereAgainstFields(
       const extOp = getExtensionOperator(fieldName);
       if (extOp !== undefined) {
         refuseExtensionInWalk(fieldName, ctx, [...path, fieldName]);
+        // Each clause runs its operator once (an embedding and a search, for
+        // recall's), and the clauses of one where all start together.
+        const used = ctx.walk.extensionOps;
+        if (used !== undefined && ++used.count > MAX_EXTENSION_OPS) {
+          throw new FilterValidationError(
+            'invalid_logical',
+            `a where takes at most ${MAX_EXTENSION_OPS} extension-operator clauses`,
+            [...path, fieldName]
+          );
+        }
         const vResult = extOp.validate((where as Record<string, unknown>)[fieldName]);
         if (!vResult.ok) {
           throw new FilterValidationError(
@@ -1066,7 +1079,8 @@ export function validateFilter(input: ValidateFilterInput): void {
     underOrNot: false,
     groupBound: false,
     frameBindings: { count: 0 },
-    exprNodes: { count: 0 }
+    exprNodes: { count: 0 },
+    extensionOps: { count: 0 }
   };
   const h = frameHelpers(input.capabilities);
   const aggs = validateSelection(input.fields, ['fields'], seed, h);

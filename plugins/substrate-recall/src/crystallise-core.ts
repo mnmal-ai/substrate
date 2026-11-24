@@ -246,6 +246,13 @@ async function sweepStaleMembership(
 
   const departed = gone.length === 0 ? 0 : await deps.clusters.markDeparted(gone, stamp);
 
+  // A medoid label is text copied from a member row. It is emptied when a
+  // member's row is gone and when the cluster retires, so no cluster with a
+  // departed member keeps text from a row that can since have been purged.
+  const unlabel = live
+    .filter((c) => (membersByCluster.get(c.id) ?? []).some((ref) => goneKeys.has(memberKey(ref))))
+    .map((c) => c.id);
+
   let retired = 0;
   // includeRetired: an already-retired cluster may still hold stranded
   // survivors. Read after `markDeparted`, so counts are current.
@@ -261,6 +268,8 @@ async function sweepStaleMembership(
       retired++;
     }
 
+    unlabel.push(cluster.id);
+
     // Depart any survivors of a retired cluster, whether it retired just now
     // or an earlier pass was interrupted (see the function doc).
     const survivors = (membersByCluster.get(cluster.id) ?? []).filter(
@@ -271,6 +280,7 @@ async function sweepStaleMembership(
     }
   }
 
+  await deps.clusters.clearMedoidLabels(unlabel);
   return { departed, retired };
 }
 

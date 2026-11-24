@@ -138,6 +138,17 @@ export class StreamSession {
     // engine's cancellation path is also what produces the terminal frame the
     // client is owed (`end { _meta.cancelled }` for a stream).
     if (this.#cancelReason !== null) handle.cancel(ENGINE_CANCEL_REASON[this.#cancelReason]);
+    // An `end` that arrived while the engine was registering found no handle either.
+    else if (this.#endDelivered) this.#releaseSubscription();
+  }
+
+  /**
+   * A subscribe has one engine entry per key, and the engine ends the session
+   * when it tears down one of them (an overloaded key, say). Its handle is what
+   * unregisters the rest.
+   */
+  #releaseSubscription(): void {
+    if (this.#init.mode === 'subscribe') this.#handle?.cancel('cancel');
   }
 
   /**
@@ -168,10 +179,11 @@ export class StreamSession {
     if (this.#terminated && !isTerminal) return;
     await this.#transport.emit(frame, this.#fieldsByKey);
     if (isTerminal) {
-      // Engine-side terminal: mark done WITHOUT re-cancelling the handle (the
-      // engine already finished) but still close the transport.
+      // Engine-side terminal: a stream has finished; a subscribe may have
+      // ended on one key with its other keys still registered.
       this.#endDelivered = true;
       this.#terminated = true;
+      this.#releaseSubscription();
       this.#transport.close('complete');
     }
   }

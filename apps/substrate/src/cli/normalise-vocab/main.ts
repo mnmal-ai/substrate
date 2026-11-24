@@ -12,6 +12,7 @@
 
 import { noRedirectFetch, tokenAudience } from '@mnmal-ai/substrate-client';
 import { trimTrailingSlashes } from '@mnmal-ai/substrate-types';
+import { oneLine } from '../../terminal-text.js';
 
 export interface NormaliseVocabOptions {
   baseUrl?: string;
@@ -86,24 +87,24 @@ export async function runNormaliseVocab(
 
   if (res.status === 409) {
     if (!argv.includes('--json')) {
-      write(`refused: ${body.message ?? 'unmapped values'}\n`);
-      for (const u of body.unmapped ?? []) write(`  ${u.value}  ${u.count}\n`);
+      write(`refused: ${oneLine(body.message ?? 'unmapped values')}\n`);
+      for (const u of body.unmapped ?? []) write(`  ${oneLine(u.value)}  ${oneLine(u.count)}\n`);
     }
     return 1;
   }
   if (!res.ok) {
     if (!argv.includes('--json'))
-      write(`HTTP ${res.status}: ${body.code ?? ''} ${body.message ?? ''}\n`);
+      write(`HTTP ${res.status}: ${oneLine(body.code ?? '')} ${oneLine(body.message ?? '')}\n`);
     return 2;
   }
   if (argv.includes('--json')) return 0;
 
   write(
-    `${namespace}/${type}.${field}: ${body.scanned ?? '?'} rows scanned${body.truncated ? ' (TRUNCATED)' : ''}\n`
+    `${namespace}/${type}.${field}: ${oneLine(body.scanned ?? '?')} rows scanned${body.truncated ? ' (TRUNCATED)' : ''}\n`
   );
   const rows = body.applied ? (body.migrated ?? []) : (body.plan ?? []);
   write(body.applied ? 'rewritten:\n' : 'would rewrite (dry run; pass --apply):\n');
-  for (const p of rows) write(`  ${p.from} -> ${p.to}  ${p.count}\n`);
+  for (const p of rows) write(`  ${oneLine(p.from)} -> ${oneLine(p.to)}  ${oneLine(p.count)}\n`);
   if (rows.length === 0) write('  (nothing)\n');
   const left = body.applied ? (body.stranded ?? []) : (body.unmapped ?? []);
   if (left.length > 0) {
@@ -112,7 +113,7 @@ export async function runNormaliseVocab(
         ? 'left as they are (rejected):\n'
         : 'no alias explains (add one, widen the vocabulary, or --reject):\n'
     );
-    for (const u of left) write(`  ${u.value}  ${u.count}\n`);
+    for (const u of left) write(`  ${oneLine(u.value)}  ${oneLine(u.count)}\n`);
   }
   return 0;
 }

@@ -177,6 +177,17 @@ describe('runCheckEnums', () => {
     expect(seen.every((a) => a === 'Bearer tok')).toBe(true);
   });
 
+  it('prints a stored value as one line with no escape or control bytes', async () => {
+    const { fetchImpl } = harness({
+      'cortext/Todo': [{ status: 'x\u001b[2J\u0007\n  DRIFT  forged' }]
+    });
+    const sink = capture();
+    await runCheckEnums([], { baseUrl: 'https://h', fetchImpl, write: sink.write });
+    expect(sink.out).toContain("stored:   'x   DRIFT  forged'");
+    for (const byte of ['\u001b', '\u0007']) expect(sink.out).not.toContain(byte);
+    expect(sink.out.match(/^ {2}DRIFT/gm)).toHaveLength(1);
+  });
+
   it('refuses to send its token to plain http on a non-loopback host', async () => {
     let calls = 0;
     const sink = capture();

@@ -272,6 +272,16 @@ for (const impl of IMPLS) {
       expect(await store.relabel('nope', 'x')).toBeNull();
     });
 
+    it('clearMedoidLabels empties a copied label and keeps an agent one', async () => {
+      await form('c1');
+      await form('c2');
+      await store.relabel('c2', 'written by an agent');
+      await store.clearMedoidLabels(['c1', 'c2', 'nope']);
+      await store.clearMedoidLabels([]);
+      expect((await store.getCluster('c1'))?.label).toBe('');
+      expect((await store.getCluster('c2'))?.label).toBe('written by an agent');
+    });
+
     it('listClusters is oldest-first', async () => {
       await store.createCluster({
         id: 'c1',

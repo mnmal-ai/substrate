@@ -1606,4 +1606,16 @@ describe('extension operators and walks', () => {
     }
     expect(() => check({ similarTo: 'x', label: { similarTo: 'y' }, ...listing() })).not.toThrow();
   });
+
+  it('caps the extension-operator clauses of one where, across its branches', () => {
+    registerExtensionOperator('similarTo', {
+      validate: (value) => ({ ok: true, value }),
+      execute: async (value) => ({ ok: true, value })
+    });
+    const clause = { similarTo: 'x' };
+    expect(() => check({ OR: [clause, clause, clause, clause] })).not.toThrow();
+    const r = refusal({ AND: [clause, { OR: [clause, clause, clause, { NOT: clause }] }] });
+    expect(r.code).toBe('invalid_logical');
+    expect(r.path.at(-1)).toBe('similarTo');
+  });
 });

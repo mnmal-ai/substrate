@@ -348,6 +348,15 @@ export class PgClusterStore implements ClusterStore {
     `;
   }
 
+  async clearMedoidLabels(clusterIds: readonly string[]): Promise<void> {
+    if (clusterIds.length === 0) return;
+    const sql = this.#sql as Sql;
+    await sql`
+      UPDATE recall_clusters SET label = ''
+      WHERE id = ANY(${clusterIds as string[]}::text[]) AND labelled_by = 'medoid'
+    `;
+  }
+
   async relabel(clusterId: string, label: string): Promise<ClusterRecord | null> {
     const sql = this.#sql as Sql;
     const rows = await sql.unsafe<ClusterRow[]>(

@@ -237,6 +237,16 @@ describe('recall/Cluster + recall/ClusterMember — read-policy gate', () => {
         similarity: 0.9
       }
     ]);
+    // A cluster with no membership rows, as a formation interrupted between
+    // creating it and attaching its members leaves behind.
+    await clusters.createCluster({
+      id: 'cE',
+      centroid: new Float32Array([1, 1]),
+      cohesion: 0.5,
+      label: 'text from a row nobody was checked against',
+      labelledBy: 'medoid',
+      provenance: PROVENANCE
+    });
 
     return buildClusterSurface({
       embeddings: noEmbeddings,
@@ -246,6 +256,13 @@ describe('recall/Cluster + recall/ClusterMember — read-policy gate', () => {
       checkReadPolicy
     } as Parameters<typeof buildClusterSurface>[0]);
   }
+
+  it('hides a cluster with no membership rows, even from a caller who reads every scope', async () => {
+    const open = await seededWithPolicy(() => ({ allow: true }));
+    const listed = await open.types.Cluster.resolver(ctx, { params: {} });
+    expect(listed.map((r) => r.id).sort()).toEqual(['cA', 'cC']);
+    expect(await open.types.Cluster.resolver(ctx, { params: { id: 'cE' } })).toEqual([]);
+  });
 
   it('recall/ClusterMember silently drops rows the caller cannot read, keeping readable ones', async () => {
     const surface = await seededWithPolicy((ns, type) => ({

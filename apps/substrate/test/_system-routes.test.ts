@@ -403,6 +403,21 @@ describe('POST /substrate/v1/_system/register — happy path + validation', () =
     expect(jsonBody<{ code: string }>(res).code).toBe('hmac_not_allowed');
   });
 
+  it('keyName with a line break or an escape → 400 invalid_key_name', async () => {
+    ctx = await mkServer();
+    const code = await mintInvite(ctx);
+    for (const keyName of ['ci\nforged row', 'ci\u001b[1A']) {
+      const res = await post(ctx, '/substrate/v1/_system/register', {
+        code,
+        publicKey: 'fake',
+        keyName,
+        algorithm: 'EdDSA'
+      });
+      expect(res.status).toBe(400);
+      expect(jsonBody<{ code: string }>(res).code).toBe('invalid_key_name');
+    }
+  });
+
   it('malformed PEM → 400 invalid_public_key', async () => {
     ctx = await mkServer();
     const code = await mintInvite(ctx);

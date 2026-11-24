@@ -157,6 +157,13 @@ export class InMemoryClusterStore implements ClusterStore {
     cluster.retiredAt = now ?? new Date();
   }
 
+  async clearMedoidLabels(clusterIds: readonly string[]): Promise<void> {
+    for (const id of clusterIds) {
+      const cluster = this.#clusters.get(id);
+      if (cluster?.labelledBy === 'medoid') cluster.label = '';
+    }
+  }
+
   async relabel(clusterId: string, label: string): Promise<ClusterRecord | null> {
     const cluster = this.#clusters.get(clusterId);
     if (cluster === undefined) return null;

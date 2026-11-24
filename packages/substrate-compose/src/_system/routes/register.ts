@@ -51,6 +51,10 @@ function validateRegisterBody(raw: unknown): RegisterBody | SubstrateResponse {
   if (b.keyName.length > MAX_KEY_NAME) {
     return badRequest('invalid_key_name', `keyName must be ${MAX_KEY_NAME} characters or fewer`);
   }
+  // A key's name is shown to operators, so it holds no control characters or line breaks.
+  if (/[\p{Cc}\u2028\u2029]/u.test(b.keyName)) {
+    return badRequest('invalid_key_name', 'keyName must not contain control characters');
+  }
   if (typeof b.algorithm !== 'string') {
     return badRequest('invalid_algorithm', 'algorithm must be one of EdDSA / RS256 / ES256');
   }

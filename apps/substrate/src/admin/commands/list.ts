@@ -8,6 +8,7 @@
 
 import { KEY_TYPE } from '@mnmal-ai/substrate-compose';
 import type { RowMetadata } from '@mnmal-ai/substrate-types';
+import { oneLine } from '../../terminal-text.js';
 import { validateArgv } from '../argv.js';
 import { type OpenDatasetFn, openPgDataset } from '../dataset.js';
 import type { AdminCliEnv } from '../env.js';
@@ -120,6 +121,14 @@ function formatTable(rows: Array<ListedKeyRow>): string {
     namespaces: 'namespaces',
     createdAt: 'createdAt'
   };
+  // A key's name is chosen by whoever registered it.
+  rows = rows.map((r) => ({
+    kid: oneLine(r.kid),
+    name: oneLine(r.name),
+    capabilities: oneLine(r.capabilities),
+    namespaces: oneLine(r.namespaces),
+    createdAt: oneLine(r.createdAt)
+  }));
   const all = [header, ...rows];
   const widths = {
     kid: Math.max(...all.map((r) => r.kid.length)),

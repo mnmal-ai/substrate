@@ -103,6 +103,20 @@ describe('StreamSession', () => {
     expect(t.closes).toEqual(['complete']);
   });
 
+  it('releases the engine subscription when the engine ends it, and leaves a finished stream alone', async () => {
+    // The engine ends a multi-key subscribe by tearing down one key; the
+    // handle is what unregisters the others.
+    const sub = fakeEngine();
+    await StreamSession.create(INIT, fakeTransport()).start(sub.engine);
+    await sub.fire({ id: 's1', kind: 'end' });
+    expect(sub.cancelled).toEqual(['cancel']);
+
+    const stream = fakeEngine();
+    await StreamSession.create({ ...INIT, mode: 'stream' }, fakeTransport()).start(stream.engine);
+    await stream.fire({ id: 's1', kind: 'end' });
+    expect(stream.cancelled).toEqual([]);
+  });
+
   it('forwards an error frame WITHOUT swallowing it, then terminates', async () => {
     // Regression guard: a transport that silently dropped `subscription_overloaded`
     // would turn a loud failure into dropped data (same class as engine_id_miss).
