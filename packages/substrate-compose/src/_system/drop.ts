@@ -81,6 +81,8 @@ export interface DropRouteDeps {
    * namespace a drop's edges reach. Absent means auth is off: everything held.
    */
   holds?: (req: Parameters<HttpHandler>[0], namespace: string, capability: string) => boolean;
+  /** Does the caller hold `capability` in every namespace? Absent with `holds`. */
+  holdsEverywhere?: (req: Parameters<HttpHandler>[0], capability: string) => boolean;
   /** Capability a cascade delete needs in each linked namespace. Defaults to `'admin'`. */
   adminCapability?: string;
 }
@@ -218,7 +220,8 @@ function controlPlaneRefusal(
 ): SubstrateResponse | null {
   if (deps.holds === undefined || !namespace.startsWith(`${SYSTEM_NAMESPACE}_`)) return null;
   const adminCap = deps.adminCapability ?? 'admin';
-  if (deps.holds(req, '*', adminCap)) return null;
+  // Auth is on here; a host that wires `holds` alone is refused, not waved through.
+  if (deps.holdsEverywhere?.(req, adminCap) === true) return null;
   return jsonResponse(403, { code: 'forbidden', required: `*:${adminCap}` });
 }
 

@@ -17,7 +17,9 @@ import {
   coversNamespace,
   grantedIn,
   grantOf,
-  type IdentityGrant
+  holdsEverywhere,
+  type IdentityGrant,
+  readsEveryNamespace
 } from '../src/identity-grant.js';
 
 describe('grantOf — grants in, grant out, null for no claim', () => {
@@ -141,5 +143,25 @@ describe('prototype-named namespaces read as absent', () => {
     expect(grantedIn(g, 'other')).toEqual([]);
     expect(confersAnywhere(g, 'admin')).toBe(true);
     expect(Object.getPrototypeOf(g)).toBe(null);
+  });
+});
+
+describe('holdsEverywhere — a wildcard that no explicit entry narrows', () => {
+  it('needs the capability under * and in every namespace the grant names', () => {
+    expect(holdsEverywhere({ grants: { '*': ['admin'] } }, 'admin')).toBe(true);
+    expect(holdsEverywhere({ grants: { '*': ['admin'], a: ['admin', 'read'] } }, 'admin')).toBe(
+      true
+    );
+    expect(holdsEverywhere({ grants: { '*': ['admin'], a: ['read'] } }, 'admin')).toBe(false);
+    expect(holdsEverywhere({ grants: { '*': ['admin'], a: [] } }, 'admin')).toBe(false);
+    expect(holdsEverywhere({ grants: { a: ['admin'] } }, 'admin')).toBe(false);
+    expect(holdsEverywhere({ grants: {} }, 'admin')).toBe(false);
+  });
+
+  it('is false for an identity that makes no claim, which only a read may pass', () => {
+    expect(holdsEverywhere(null, 'admin')).toBe(false);
+    expect(holdsEverywhere({}, 'admin')).toBe(false);
+    expect(readsEveryNamespace(null)).toBe(true);
+    expect(readsEveryNamespace({ grants: { '*': ['read'], a: [] } })).toBe(false);
   });
 });
