@@ -1,7 +1,7 @@
-import type { PackEnvelope, SubstrateResponse } from '@mnmal-ai/substrate/sdk';
+import type { PackEnvelope, Policy, SubstrateResponse } from '@mnmal-ai/substrate/sdk';
 import { compose, MemoryDataset, MemorySubstrateServer } from '@mnmal-ai/substrate/testing';
 import { afterEach, describe, expect, it } from 'vitest';
-import { SENTINEL_TYPE_NAMES } from '../src/namespace.js';
+import { buildSentinelNamespace, SENTINEL_TYPE_NAMES } from '../src/namespace.js';
 import { buildSentinelForTest } from './_helpers.js';
 
 const NS = 'sentinel';
@@ -84,6 +84,25 @@ describe('buildSentinelNamespace', () => {
         expect(mutations).toContain(`${prefix}${type}`);
       }
     }
+  });
+
+  it('allows a non-admin to read and refuses it a write, at dispatch and in a write probe', () => {
+    const policy = buildSentinelNamespace(NS).types?.Coordinator?.policy as Policy | undefined;
+    const base = {
+      identity: { id: 'peer', kind: 'agent' as const, grants: { [NS]: ['read', 'mutate'] } },
+      namespace: NS,
+      now: new Date(),
+      headers: {},
+      meta: {}
+    };
+    const allow = (ctx: object) => policy?.({ ...base, ...ctx } as never, {}).allow;
+    expect(allow({ operation: 'query', entry: 'Coordinator' })).toBe(true);
+    expect(allow({ operation: 'mutate', entry: 'getCoordinator', verb: 'get' })).toBe(true);
+    expect(allow({ operation: 'mutate', entry: 'deleteCoordinator', verb: 'delete' })).toBe(false);
+    expect(allow({ operation: 'query', entry: 'deleteCoordinator', verb: 'delete' })).toBe(false);
+    // The engine's write probe names the type itself.
+    expect(allow({ operation: 'mutate', entry: 'Coordinator', verb: 'update' })).toBe(false);
+    expect(allow({ operation: 'mutate', entry: 'Coordinator' })).toBe(false);
   });
 
   it('reads a stored coordinator back via the Coordinator list', async () => {

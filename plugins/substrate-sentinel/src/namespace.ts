@@ -29,8 +29,12 @@ export const REGISTER_WRITE = 'sentinelRegister';
  * route, which checks who owns a name and a url, or by a namespace admin.
  */
 const registerWrites: Policy = (ctx) => {
+  // A write probe names the type with operation 'mutate', so the name alone
+  // does not make a read.
   const reads =
-    ctx.verb === 'get' || (SENTINEL_TYPE_NAMES as readonly string[]).includes(ctx.entry ?? '');
+    ctx.verb === 'get' ||
+    (ctx.operation !== 'mutate' &&
+      (SENTINEL_TYPE_NAMES as readonly string[]).includes(ctx.entry ?? ''));
   if (reads || ctx.meta[REGISTER_WRITE] === true) return { allow: true };
   return grantedIn(grantOf(ctx.identity), ctx.namespace).includes('admin')
     ? { allow: true }
