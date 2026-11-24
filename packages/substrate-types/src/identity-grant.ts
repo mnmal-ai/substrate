@@ -76,6 +76,16 @@ export function coversNamespace(resolved: IdentityGrant | null, ns: string): boo
 }
 
 /** A per-frame grant check's verdict, naming which dimension refused. */
+/**
+ * True when the identity may read every namespace: no grant claim at all, or a
+ * `*` entry holding `read` that no explicit entry narrows.
+ */
+export function readsEveryNamespace(identity: GrantBearing | null | undefined): boolean {
+  const resolved = grantOf(identity);
+  if (resolved === null) return true;
+  return Object.keys(resolved).every((ns) => resolved[ns]?.includes('read')) && '*' in resolved;
+}
+
 export type GrantVerdict =
   | { ok: true }
   | { ok: false; reason: 'namespace' | 'capability'; required?: string };
