@@ -83,5 +83,11 @@ export async function runRevoke(
 export function formatRevokeOutput(result: RevokeResult): string {
   // Direct-to-postgres: no interceptor fires, so the running server keeps
   // verifying the revoked key until re-prime.
-  return [`Key ${result.kid} revoked at ${result.revokedAt}`, '', RESTART_NOTE, ''].join('\n');
+  return [
+    `Key ${result.kid} revoked at ${result.revokedAt}`,
+    'directory row:    NOT changed — direct-to-postgres cannot reach a plugin namespace',
+    '',
+    RESTART_NOTE,
+    ''
+  ].join('\n');
 }

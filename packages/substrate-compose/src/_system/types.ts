@@ -156,6 +156,12 @@ export interface IdentityDirectoryConfig {
   readonly displayNameField?: string | null;
   /** Static params merged beneath the derived + caller-supplied ones. */
   readonly defaults?: Readonly<Record<string, unknown>>;
+  /**
+   * Boolean directory field a revoke sets to `false`, so the directory stops
+   * listing a kid that can no longer sign. `null` leaves the row alone.
+   * Default `'active'`.
+   */
+  readonly activeField?: string | null;
 }
 
 /** Qualifying namespace for every type in this module. */

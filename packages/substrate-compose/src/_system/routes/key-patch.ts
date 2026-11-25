@@ -21,8 +21,68 @@ import {
 } from '@mnmal-ai/substrate-policy';
 import type { HttpHandler, Row } from '@mnmal-ai/substrate-types';
 import { buildContext, jsonResponse, refusalStatus } from '../../routes/helpers.js';
-import { KEY_TYPE, SYSTEM_NAMESPACE } from '../types.js';
+import { type IdentityDirectoryConfig, KEY_TYPE, SYSTEM_NAMESPACE } from '../types.js';
+import { parseDirectoryFrame } from './keys.js';
 import { type KeysRouteOptions, parseBody, refuseUnhosted, unhostedNamespaces } from './shared.js';
+
+/** What a revoke did to the kid's directory row. */
+type DirectoryOutcome =
+  | { deactivated: true; frame: string }
+  | { deactivated: false; reason: string };
+
+/**
+ * Sets the directory row of a revoked kid inactive, as the caller. It runs
+ * after the revoke has committed and never undoes it: a directory that cannot
+ * be written is reported in `reason`, and the credential stays revoked.
+ */
+async function deactivateDirectoryRow(
+  engine: Engine,
+  config: IdentityDirectoryConfig | undefined,
+  kid: string,
+  ctx: Parameters<Engine['mutate']>[0]['ctx'],
+  signal: AbortSignal | undefined
+): Promise<DirectoryOutcome> {
+  if (config === undefined) return { deactivated: false, reason: 'not_configured' };
+  const activeField = config.activeField === undefined ? 'active' : config.activeField;
+  if (activeField === null) return { deactivated: false, reason: 'opted_out' };
+  const split = parseDirectoryFrame(config.frame);
+  if (split === null) return { deactivated: false, reason: 'directory_misconfigured' };
+  const sig = signal !== undefined ? { signal } : {};
+  try {
+    const read = await engine.query({
+      frame: {
+        [config.frame]: {
+          params: { where: { [config.kidField ?? 'kid']: { eq: kid } } },
+          fields: { id: true }
+        }
+      },
+      ctx,
+      ...sig
+    });
+    const readErr = read.errors?.[0];
+    if (readErr !== undefined) return { deactivated: false, reason: readErr.code ?? 'read_failed' };
+    const rows = (read.data?.[config.frame] ?? []) as Array<{ id: string }>;
+    if (rows.length === 0) return { deactivated: false, reason: 'no_row' };
+    const opKey = `${split.ns}/update${split.type}`;
+    const written = await engine.mutate({
+      frame: {
+        [opKey]: rows.map((r) => ({
+          params: { id: r.id, [activeField]: false },
+          fields: { id: true }
+        }))
+      } as Parameters<Engine['mutate']>[0]['frame'],
+      ctx,
+      ...sig
+    });
+    const writeErr = written.errors?.[0];
+    if (writeErr !== undefined) {
+      return { deactivated: false, reason: writeErr.code ?? 'write_failed' };
+    }
+    return { deactivated: true, frame: config.frame };
+  } catch {
+    return { deactivated: false, reason: 'directory_error' };
+  }
+}
 
 export function keyPatchRoute(engine: Engine, opts: KeysRouteOptions): HttpHandler {
   const keyFrame = `${SYSTEM_NAMESPACE}/${KEY_TYPE}`;
@@ -163,10 +223,14 @@ export function keyPatchRoute(engine: Engine, opts: KeysRouteOptions): HttpHandl
       });
     }
 
+    if (!revoke) {
+      return jsonResponse(200, { kid, revoked: false, namespaces: nextNs, capabilities: nextCaps });
+    }
     return jsonResponse(200, {
       kid,
-      revoked: revoke,
-      ...(revoke ? { revokedAt: params.revokedAt } : { namespaces: nextNs, capabilities: nextCaps })
+      revoked: true,
+      revokedAt: params.revokedAt,
+      directory: await deactivateDirectoryRow(engine, opts.identityDirectory, kid, ctx, req.signal)
     });
   };
 }

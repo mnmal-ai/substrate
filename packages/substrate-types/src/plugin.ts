@@ -185,7 +185,19 @@ export abstract class RegistryBase implements Registry {
   }
 
   replace(key: string | { readonly name: string }, input: RegistryEntryInput): void {
-    this.performReplace(key, input);
+    // A new resolver beside the old entry's own `batch` means the caller wrapped
+    // the resolver and carried `batch` over by spreading the entry. A mutate array
+    // would call that `batch` and skip the wrapper, so it is dropped and each
+    // element runs through the new resolver.
+    const prev = this.get(key);
+    const carried =
+      prev?.batch !== undefined && input.batch === prev.batch && input.resolver !== prev.resolver;
+    if (carried) {
+      const { batch: _batch, ...rest } = input;
+      this.performReplace(key, rest);
+    } else {
+      this.performReplace(key, input);
+    }
     this.#epoch++;
   }
 

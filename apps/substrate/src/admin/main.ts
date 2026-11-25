@@ -7,6 +7,7 @@
  */
 
 import pkg from '../../package.json' with { type: 'json' };
+import { oneLine } from '../terminal-text.js';
 import { ARGV_SPEC, validateArgv } from './argv.js';
 import { formatBootstrapOutput, parseBootstrapArgs, runBootstrap } from './commands/bootstrap.js';
 import { doctorCommand, formatDoctorReport } from './commands/doctor.js';
@@ -172,6 +173,11 @@ export async function main(
             `Key ${String(payload.kid)} revoked at ${String(payload.revokedAt)} — ` +
               'the running server saw it.\n'
           );
+          const dir = (payload.directory ?? {}) as { deactivated?: boolean; reason?: string };
+          if (dir.deactivated === true) out('directory row:    set inactive\n');
+          else if (dir.reason !== undefined && dir.reason !== 'not_configured') {
+            out(`directory row:    NOT changed — ${oneLine(String(dir.reason))}\n`);
+          }
           return 0;
         }
         const result = await runRevoke(kid, env, openDataset);

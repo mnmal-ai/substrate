@@ -38,6 +38,10 @@ export interface AdminRevokeResult {
   readonly kid: string;
   readonly revoked: true;
   readonly revokedAt: string;
+  /** What the revoke did to the kid's directory row; absent from servers before 1.0.0-beta.17. */
+  readonly directory?:
+    | { readonly deactivated: true; readonly frame: string }
+    | { readonly deactivated: false; readonly reason: string };
 }
 
 export type AdminKeyAlgorithm = 'EdDSA' | 'RS256' | 'ES256';
