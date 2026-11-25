@@ -24,17 +24,8 @@
  */
 
 import {
-  applyExtensionResultMeta,
-  decodeCursor,
-  type ExtensionOpResultMeta,
-  encodeCursor,
-  exprTypeOfField,
-  fieldRequested,
   fullBuiltinOperators,
-  preResolveExtensionOperatorsDetailed,
-  type TypeRef,
-  walkAggExprType,
-  whereUsesWalks
+  preResolveExtensionOperatorsDetailed
 } from '@mnmal-ai/substrate-filter';
 import type {
   ActorIdentity,
@@ -42,15 +33,12 @@ import type {
   Dataset,
   DeleteResult,
   DropResult,
-  ExprType,
-  FieldDef,
   FilterCapabilities,
   FilterWriteOptions,
   FilterWriteResult,
   Id,
   IndexDecl,
   IndexPlan,
-  OrderedBy,
   PoolStats,
   PromotionEvent,
   ReadParams,
@@ -67,82 +55,49 @@ import type {
   WriteResult,
   WriteRow
 } from '@mnmal-ai/substrate-types';
-import {
-  assertNoRepeatedIds,
-  filterTooBroad,
-  isColumnField,
-  naturalOrderOf,
-  ResolverFrameError,
-  STORE_BUSY,
-  UnsupportedFilterError,
-  VALUE_OUT_OF_RANGE
-} from '@mnmal-ai/substrate-types';
-import type { PendingQuery, Row as PgRow, ReservedSql, Sql, TransactionSql } from 'postgres';
+import { assertNoRepeatedIds, ResolverFrameError, STORE_BUSY } from '@mnmal-ai/substrate-types';
+import type { Sql, TransactionSql } from 'postgres';
 import { withPgAdvisoryLock } from './advisory-lock.js';
 import type { DiskGuard } from './disk-guard.js';
 import { NamespaceMismatch, queryTimeoutError, ReservedField } from './errors.js';
-import {
-  describeTypeIndexes,
-  desiredIndexKeys,
-  type HeldIndex,
-  heldIndexes,
-  IndexDropRefusedError,
-  type IndexState,
-  isEngineOwned,
-  pendingIndexBuilds,
-  type ReconcileTypeIndexesArgs,
-  reconcileTypeIndexes,
-  typeIndexesOf,
-  undeclaredIndexes
-} from './index-reconciler.js';
 import { detectLayout, ident, type StorageLayout } from './layout.js';
-import { IndexLockAborted, UnsupportedStoreLayoutError, withTableIndexLock } from './migrate.js';
-import { cachedMisfitCount, countMisfits, freshMisfitCount } from './misfits.js';
+import { UnsupportedStoreLayoutError } from './migrate.js';
+import type { FieldDefLookup, TypeDefLookup } from './pg-dataset-context.js';
+import { type PgContext, uniqueViolation } from './pg-dataset-context.js';
+import {
+  cancellable,
+  type ResolveWhere,
+  readOnce,
+  StaleRead,
+  usesWalkGrammar
+} from './pg-dataset-read.js';
+import {
+  ANONYMOUS,
+  extractOriginalId,
+  type GuardedRecord,
+  materialize,
+  RESERVED_DELETED_AT
+} from './pg-dataset-row.js';
+import {
+  describeStorage,
+  dropEngineIndex,
+  dropNamespaceIndexes,
+  fieldWarnings,
+  indexDeclarationOf,
+  indexPlan,
+  pendingIndexBuilds,
+  reconcileIndexes,
+  storageReport,
+  typeStats
+} from './pg-dataset-storage.js';
+import { filterWrite, patchTable } from './pg-dataset-writes.js';
 import type { PgEdgesStore } from './pg-edges-store.js';
 import { PgShortIdStore, parseShortId } from './pg-short-id-store.js';
-import {
-  buildFrameCount,
-  buildWalkAgg,
-  buildWalkColumns,
-  decodeInt64,
-  int64Plan,
-  mergeWalkColumns,
-  prepareWindows
-} from './pg-sql/aggregate.js';
-import { compileExprTyped } from './pg-sql/expression.js';
-import { buildGroupedRead } from './pg-sql/grouped.js';
-import { fieldExprSql, sqlStringLiteral } from './pg-sql/primitives.js';
-import type { ComputedLookup } from './pg-sql/sorting.js';
-import { prepareSharedPicks, tableLookup, walkScope, walkTypes, withCtes } from './pg-sql/walk.js';
-import {
-  assembleRowMetadata,
-  type BodyOrderByCast,
-  buildCursorCompare,
-  buildCursorNullTail,
-  buildOrderBy,
-  buildProjectedOrderBy,
-  buildRowProjection,
-  buildSortKeyProjection,
-  buildWhere,
-  combineAnd,
-  conditionalMatchFragment,
-  type Fragment,
-  idToText,
-  normalizeOrderBy,
-  readsRowMetadata,
-  readsShortId,
-  resolveBodyOrderByCast,
-  whereReferencesField
-} from './pg-sql.js';
-import {
-  isTransientPromotionError,
-  PROMOTION_FAILED_AFTER,
-  promotePendingFields
-} from './promote.js';
-import { decodeRow, encodeRow, RAW_KEY } from './row-codec.js';
+import { combineAnd, conditionalMatchFragment, idToText } from './pg-sql.js';
+import { promotePendingFields } from './promote.js';
+import { encodeRow } from './row-codec.js';
 import { type PgHandle, txScopeIdFor } from './tx-scope.js';
 import {
-  absentTypeTable,
   dropTableCache,
   ensureTypeTable,
   listenTableCache,
@@ -154,51 +109,23 @@ import {
   typeTableOf
 } from './type-table.js';
 import { UUID_CHECK_MIGRATION } from './uuid-check.js';
+
+export type { FieldDefLookup, TypeDefLookup } from './pg-dataset-context.js';
+
 import {
   assertReadCommitted,
   GUARDED_ATTEMPTS,
-  guardCte,
-  guardedRead,
   guardedRows,
   inputCte,
   mergeAssignments,
-  type ReadGuardEntry,
   type RowToWrite,
-  returnedRowSql,
   setList,
-  shortIdJoinSql,
   writeRowsStatement
 } from './write-rows.js';
 
 // The pool-owned instance holds `Sql`; tx-scoped instances hold the
 // `TransactionSql` from `sql.begin(fn)`. Only `Sql` exposes `begin`, so that
 // access is gated behind `#inTx`.
-
-/**
- * Returns the declared FieldDef for a type's field, or undefined when unknown
- * (body-key sorts then fall back to text compare). Lets the SQL builders cast
- * body values by declared kind, so `count` sorts 2 before 10 — see
- * `resolveBodyOrderByCast`.
- */
-export type FieldDefLookup = (type: string, field: string) => FieldDef | undefined;
-
-/**
- * A type's declared fields and indexes, or undefined when the type is unknown.
- * Called with the asking dataset's namespace, so a `forNamespace` clone that
- * inherits the lookup resolves its own types.
- */
-export type TypeDefLookup = (
-  type: string,
-  namespace: string
-) =>
-  | {
-      fields: Record<string, FieldDef>;
-      indexes?: IndexDecl[];
-      orderedBy?: OrderedBy;
-      ordering?: 'visible';
-      expectedSize?: 'small' | 'large';
-    }
-  | undefined;
 
 export interface PgDatasetOptions {
   namespace: string;
@@ -303,120 +230,13 @@ async function snapshotUnlessReadCommitted(tx: TransactionSql, txTables: TxTable
   for (const e of entries) e.snapshot = true;
 }
 
-/** {@link preResolveExtensionOperatorsDetailed}, as a read's attempts share it. */
-type ResolveWhere = typeof preResolveExtensionOperatorsDetailed;
-
-/** An index whose build this process deferred, is running, or saw fail. */
-interface DeferredBuild {
-  state: 'pending' | 'building' | 'failed';
-  /** `<namespace>/<type>`. */
-  type: string;
-  /** Why it failed: an error code, then a short reason. */
-  error?: string;
-  /** Why it is pending, when the disk guard refused it. */
-  reason?: 'insufficient_disk';
-}
-
-/**
- * `N open index recommendation(s)` while the index advisor has any, else
- * nothing. Reads `_system/IndexRecommendation` from this schema's type table,
- * so a `_system` held elsewhere (memory) reports none.
- */
-async function openRecommendations(sql: Sql): Promise<string[]> {
-  const table = await loadTypeTable(sql, '_system', 'IndexRecommendation');
-  const [row] =
-    table === undefined
-      ? []
-      : await sql.unsafe<Array<{ n: number }>>(
-          `SELECT count(*)::int AS n FROM ${table.from}
-           WHERE deleted_at IS NULL AND ${fieldExprSql(table, 'state', 'text')} = 'open'`
-        );
-  const n = row?.n ?? 0;
-  return n === 0
-    ? []
-    : [
-        `${n} open index recommendation${n === 1 ? '' : 's'}: query _system/IndexRecommendation, then apply or dismiss each with propose_index`
-      ];
-}
-
-/** Per pool, so every dataset on it reports what the others deferred. */
-const deferredBuilds = new WeakMap<object, Map<string, DeferredBuild>>();
-
 /** The store's layout once migrated, shared by an instance and every clone of it. */
 interface LayoutCache {
   layout?: StorageLayout;
 }
 
-const RESERVED_DELETED_AT = '_deletedAt';
-
-/** The `updatedBy` a write without an actor stamps. */
-const ANONYMOUS: ActorIdentity = { kind: 'system', id: 'anonymous' };
-
-/** A written row as {@link guardedRows} returns it: `id` null on the row carrying `ok` alone. */
-type GuardedRecord = TableRowRecord & { ok: boolean; iso: string };
-
-/** A read whose statement found one of its tables past the version it was built for. */
-class StaleRead {
-  constructor(
-    readonly types: readonly TypeRef[],
-    /** The transaction's isolation level, as the statement saw it. */
-    readonly iso: string
-  ) {}
-}
-
-/** A type-table row as returned for `decodeRow`: `extra` and its columns. */
-type TableRowRecord = {
-  id: string;
-  extra: Record<string, unknown>;
-  deleted_at: Date | null;
-  /** From short_ids; null when no binding exists. */
-  short_id: number | null;
-  // Row-metadata columns. NULL for legacy rows.
-  created_at: Date | null;
-  updated_at: Date | null;
-  created_by_kind: string | null;
-  created_by_id: string | null;
-  updated_by_kind: string | null;
-  updated_by_id: string | null;
-  /** bigint as a string; null off visible-order types. */
-  seq: string | null;
-};
-
-/**
- * `dropEngineIndex`'s bound on each lock wait. A request transaction ends in
- * well under this; one still open after it is a long export or a caller
- * waiting on the drop itself, and the drop holds the table's index-build lock
- * and two connections while it waits, so it gives up and the caller retries.
- */
-const DROP_LOCK_TIMEOUT_MS = 10_000;
-
 /** Rows per `purgeTombstonedRows` statement. A test seam, not exported from the package. */
 export const purgeBatch = { size: 10_000 };
-
-/**
- * DROP INDEX CONCURRENTLY `name` (of `where`, for messages) on `conn`, each
- * lock wait bounded by `timeoutMs`; a wait over it throws `index_drop_timeout`.
- */
-async function dropIndexBounded(
-  conn: ReservedSql,
-  name: string,
-  where: string,
-  timeoutMs: number
-): Promise<void> {
-  const timeout = Math.max(1, Math.trunc(timeoutMs));
-  try {
-    await conn.unsafe(`SET lock_timeout = ${timeout}`);
-    await conn.unsafe(`DROP INDEX CONCURRENTLY IF EXISTS ${ident(name)}`);
-  } catch (err) {
-    if ((err as { code?: unknown }).code !== '55P03') throw err;
-    throw new IndexDropRefusedError(
-      'index_drop_timeout',
-      `dropping index ${name} on ${where} waited over ${timeout} ms on another transaction; retry once it ends`
-    );
-  } finally {
-    await conn.unsafe('RESET lock_timeout');
-  }
-}
 
 export class PgDataset implements Dataset {
   readonly namespace: string;
@@ -445,6 +265,7 @@ export class PgDataset implements Dataset {
   readonly #statementTimeoutMs: number;
   readonly #tableCache: TableCache;
   readonly #txTables: TxTables | null;
+  readonly #ctx: PgContext;
 
   constructor(options: PgDatasetOptions | InternalPgSubstrateDatasetOptions) {
     this.namespace = options.namespace;
@@ -474,6 +295,18 @@ export class PgDataset implements Dataset {
     this.#tableCache =
       ('tableCache' in options ? options.tableCache : undefined) ?? tableCacheFor(options.sql);
     this.#txTables = ('txTables' in options ? options.txTables : undefined) ?? null;
+    this.#ctx = {
+      namespace: this.namespace,
+      sql: this.#sql,
+      inTx: this.#inTx,
+      fieldDefLookup: this.#fieldDefLookup,
+      fieldDefLookupFor: this.#fieldDefLookupFor,
+      typeDefLookup: this.#typeDefLookup,
+      diskGuard: this.#diskGuard,
+      layout: () => this.#layout(),
+      tableFor: (type, namespace, read) => this.#tableFor(type, namespace, read),
+      guarded: (type, table, write) => this.#guarded(type, table, write)
+    };
   }
 
   /**
@@ -691,7 +524,7 @@ export class PgDataset implements Dataset {
     };
     for (let attempt = 1; ; attempt++) {
       try {
-        return await this.#readOnce(type, params, walks, resolveOnce);
+        return await readOnce(this.#ctx, type, params, walks, resolveOnce);
       } catch (err) {
         if (!(err instanceof StaleRead)) throw err;
         if (attempt >= GUARDED_ATTEMPTS) {
@@ -715,488 +548,6 @@ export class PgDataset implements Dataset {
         }
       }
     }
-  }
-
-  async #readOnce(
-    type: string,
-    params: ReadParams,
-    walks: boolean,
-    resolveWhere: ResolveWhere
-  ): Promise<ReadResult> {
-    const sql = this.#sql;
-    const includeDeleted = params.includeDeleted === true;
-
-    const limit =
-      typeof params.limit === 'number' && Number.isFinite(params.limit) && params.limit >= 0
-        ? Math.floor(params.limit)
-        : undefined;
-
-    params.signal?.throwIfAborted();
-    // Fast path: limit === 0 returns empty without hitting the db. A count or
-    // whole-result aggregate still answers, as memory's does.
-    const wholeResult = params.count === true || params.aggregate !== undefined;
-    if (limit === 0 && !wholeResult) return { rows: [], hasMore: false };
-
-    const idList: string[] = [];
-    let hasIdFilter = false;
-    if (params.id !== undefined) {
-      idList.push(idToText(params.id));
-      hasIdFilter = true;
-    }
-    if (params.ids !== undefined) {
-      for (const id of params.ids) idList.push(idToText(id));
-      hasIdFilter = true;
-    }
-
-    // The compiler cannot await, so the seed's and every far type's table is
-    // loaded first (F19), each from its own namespace. A type with no table
-    // yet reads as an empty one.
-    const lookup = this.#fieldDefLookup;
-    const seed = { ns: this.namespace, type };
-    // A far namespace's fields by that namespace's definitions only, and none without them.
-    const fieldDef = (t: TypeRef, f: string) =>
-      t.ns === this.namespace ? lookup?.(t.type, f) : this.#fieldDefLookupFor?.(t.ns)(t.type, f);
-    const types = walks ? walkTypes(params, seed, fieldDef) : [seed];
-    // Without far definitions a crossing walk would cast far fields blind: refuse it.
-    const away =
-      this.#fieldDefLookupFor === null ? types.find((t) => t.ns !== this.namespace) : undefined;
-    if (away !== undefined) {
-      throw new UnsupportedFilterError(
-        `${away.ns}/${away.type}`,
-        '_walk',
-        `crosses into namespace '${away.ns}', and this dataset has no fieldDefLookupFor to type its fields`
-      );
-    }
-    const loaded = await Promise.all(types.map((t) => this.#tableFor(t.type, t.ns, true)));
-    const tableFor = tableLookup(types.map((t, i) => loaded[i] ?? absentTypeTable(t.ns, t.type)));
-    const table = tableFor(seed);
-    // Each statement checks every descriptor it decodes through (M3); an
-    // unmigrated store has no catalog to check, and no table to read.
-    const guard: ReadGuardEntry[] | null =
-      (await this.#layout()) === 'absent'
-        ? null
-        : types.map((t, i) => ({
-            namespace: t.ns,
-            type: t.type,
-            version: loaded[i]?.version ?? null
-          }));
-    /** `statement`'s rows, but those of a stale read, which throw {@link StaleRead}; `key` is non-null on a real row. */
-    const run = async <R extends object>(statement: Fragment, key: keyof R): Promise<R[]> => {
-      try {
-        if (guard === null) return (await cancellable(statement, params.signal)) as unknown as R[];
-        const out = await cancellable(guardedRead(sql, guard, statement), params.signal);
-        if (out[0]?.guard_ok !== true) throw new StaleRead(types, String(out[0]?.guard_iso));
-        return out.filter((r) => r[key as string] !== null) as unknown as R[];
-      } catch (err) {
-        // 22003: an int64 sum or an expression left its type's range, as memory's RangeError.
-        if ((err as { code?: unknown } | null)?.code === '22003') {
-          throw new ResolverFrameError(VALUE_OUT_OF_RANGE, (err as Error).message);
-        }
-        throw err;
-      }
-    };
-
-    // Build WHERE fragment incrementally. Use table alias `r` to avoid
-    // ambiguity with the short_ids alias `s`.
-    const clauses: Fragment[] = [];
-    if (hasIdFilter) clauses.push(sql`r.id = ANY(${idList})`);
-    if (!includeDeleted) clauses.push(sql`r.deleted_at IS NULL`);
-    // Maps a body field's declared kind to the cast applied to its extraction,
-    // for both sorting and WHERE. Null when no lookup is wired or the field is
-    // undeclared; the builders then infer from the operand.
-    const bodyCastFor = this.#castFor(type);
-
-    // Extension-operator side-channel (relevance order, score/vector), applied
-    // to the final page below.
-    let extMeta: ExtensionOpResultMeta | null = null;
-    // One scope per statement, so walk aliases stay unique across where and projection.
-    const scope = walks ? walkScope(this.namespace, type, 'r', fieldDef, tableFor) : undefined;
-    if (scope !== undefined) {
-      // As the plan advisor's `leads`: a full index, the crossRef first, `key` next.
-      scope.indexDir = (t, crossRef, key) =>
-        desiredIndexKeys(this.#indexArgs(t.type, t.ns)).find(
-          (i) => i.only === undefined && i.keys[0]?.[0] === crossRef && i.keys[1]?.[0] === key
-        )?.keys[1]?.[1];
-    }
-    const frameAggs = params.agg;
-    if (scope !== undefined && frameAggs !== undefined) {
-      // shortcut: each `_agg.<name>` reference recomputes its subquery; a
-      // LATERAL computed once per seed row would share it, if it ever costs.
-      scope.aggValue = (name) => {
-        const spec = Object.hasOwn(frameAggs, name) ? frameAggs[name] : undefined;
-        if (spec === undefined) throw new Error(`internal: '_agg.${name}' names no frame _agg`);
-        return buildWalkAgg(sql, spec, table, scope).value;
-      };
-    }
-    // #1815: shared forms, registered once the where's extension operators
-    // are resolved, so their seed filters compile. Joined to the page.
-    let windowJoins = sql``;
-    // The pick CTEs' LEFT JOINs, which the statement reading the where carries.
-    let pickJoins = sql``;
-    if (params.where !== undefined) {
-      // Resolves extension operators (e.g. embeddingSimilar) to `id IN [...]`
-      // clauses before the synchronous SQL builder runs.
-      const detailed = await resolveWhere(params.where, {
-        namespace: this.namespace,
-        type,
-        k: limit,
-        ...(fieldRequested(params.fields, '_vector') ? { returnVector: true } : {})
-      });
-      extMeta = detailed.meta;
-      if (scope !== undefined) {
-        const resolved = { ...params, where: detailed.where };
-        const base = { clauses: [...clauses], ids: hasIdFilter };
-        // A frame `_agg` window read by every seed is one group-by pass.
-        windowJoins = prepareWindows(sql, resolved, base, bodyCastFor, table, scope, (t, field) =>
-          desiredIndexKeys(this.#indexArgs(t.type, t.ns)).some(
-            (i) => i.only === undefined && i.keys[0]?.[0] === field
-          )
-        );
-        // A pick many seeds share through one hub is computed once per hub.
-        pickJoins = prepareSharedPicks(sql, resolved, base, bodyCastFor, table, scope);
-      }
-      const whereFragment = buildWhere(sql, detailed.where, bodyCastFor, table, scope);
-      if (whereFragment !== null) clauses.push(whereFragment);
-    }
-
-    // A count or whole-result aggregate returns no rows, and ignores any cursor.
-    if (wholeResult && scope !== undefined) {
-      const matched = combineAnd(sql, clauses);
-      if (params.count === true) {
-        const [row] = await run<{ n: number }>(
-          sql`${withCtes(sql, scope)}${buildFrameCount(sql, matched, scope, pickJoins)}`,
-          'n'
-        );
-        return { rows: [], hasMore: false, count: row?.n ?? 0 };
-      }
-      const aggregate = params.aggregate ?? {};
-      const grouped = buildGroupedRead(
-        sql,
-        { ...params, aggregate, limit },
-        matched,
-        pickJoins,
-        table,
-        (f) => fieldDef(seed, f),
-        scope
-      );
-      const rows = await run<{ g: number } & Record<string, unknown>>(
-        sql`${withCtes(sql, scope)}${grouped.statement}`,
-        'g'
-      );
-      const truncated = limit !== undefined && rows.length > limit;
-      const page = truncated ? rows.slice(0, limit) : rows;
-      return {
-        rows: [],
-        hasMore: false,
-        groups: page.map(grouped.decode),
-        ...(truncated ? { truncated: true } : {})
-      };
-    }
-
-    const orderBy = normalizeOrderBy(params.orderBy);
-
-    const orderByCastFor = bodyCastFor;
-    // A filter or sort on shortId needs `s.short_id` per candidate, so it
-    // joins before LIMIT (see `page` below).
-    const joinShortIds =
-      whereReferencesField(params.where, 'shortId') || orderBy.some(([f]) => f === 'shortId');
-
-    // A leading select key, which every matched row needs, is computed once per
-    // row as a column of a fenced subquery the page reads as `r`, so ORDER BY, the
-    // cursor compare and the projected sort key share it. A later one is inlined:
-    // an index on the lead then computes it only for the rows it reads.
-    // shortcut: with the shortId join the where reads `s`, so there the
-    // expression is inlined at each use; fence that join too if it ever costs.
-    // `select` expressions, compiled once: each is a column of the page, and an
-    // orderBy key by its name. A string sorts by byte order, as memory's.
-    const selectEntries = Object.entries(params.select ?? {});
-    const selectFragments = new Map<string, Fragment>();
-    const selectTypes = new Map<string, ExprType>();
-    if (selectEntries.length > 0) {
-      const used = JSON.stringify(params.select);
-      const outputs = new Map<string, Fragment>();
-      const aggTypes = new Map<string, ExprType>();
-      for (const [name, spec] of Object.entries(frameAggs ?? {})) {
-        const t = walkAggExprType(spec, seed, fieldDef);
-        if (!used.includes(`"_agg.${name}"`) || t === undefined || scope?.aggValue === undefined) {
-          continue;
-        }
-        // The aggregate is a jsonb value; read it as the type the evaluator reads it as.
-        const v = scope.aggValue(name);
-        outputs.set(
-          `_agg.${name}`,
-          t === 'number'
-            ? sql`substrate_num(${v})::float8`
-            : t === 'date'
-              ? sql`substrate_ts(${v})`
-              : sql`(${v}) #>> '{}'`
-        );
-        aggTypes.set(`_agg.${name}`, t);
-      }
-      const fieldType = (name: string) =>
-        aggTypes.get(name) ?? exprTypeOfField(fieldDef(seed, name));
-      for (const [name, expr] of selectEntries) {
-        const { fragment, type: t } = compileExprTyped(sql, expr, {
-          table,
-          alias: 'r',
-          outputs,
-          fieldType
-        });
-        selectFragments.set(name, fragment);
-        selectTypes.set(name, t ?? 'string');
-      }
-    }
-    const computedExpr = (field: string): Fragment | undefined => {
-      const chosen = Object.hasOwn(params.select ?? {}, field)
-        ? selectFragments.get(field)
-        : undefined;
-      if (chosen !== undefined) {
-        return selectTypes.get(field) === 'string' ? sql`((${chosen}) COLLATE "C")` : chosen;
-      }
-      return undefined;
-    };
-    const lead = orderBy[0]?.[0] ?? 'id';
-    const fenced = joinShortIds ? undefined : computedExpr(lead);
-    const computedFor: ComputedLookup = Object.assign(
-      (field: string): Fragment | undefined =>
-        fenced !== undefined && field === lead ? sql`r.__computed_0` : computedExpr(field),
-      { typeOf: (field: string) => selectTypes.get(field) }
-    );
-    // OFFSET 0 keeps the subquery from being flattened back into one evaluation per use.
-    const rel = sql.unsafe(table.from);
-    const from =
-      fenced === undefined
-        ? sql`${rel} r${pickJoins}${windowJoins}`
-        : sql`(SELECT r.*, ${fenced} AS __computed_0 FROM ${rel} r${pickJoins} WHERE ${combineAnd(sql, clauses)} OFFSET 0) r${windowJoins}`;
-    const ctes = withCtes(sql, scope);
-    const base = fenced === undefined ? clauses : [];
-
-    // Cursor: a tuple-compare clause so the page starts strictly after the
-    // cursor's (orderBy-values, id) tuple. It matches only non-null leading
-    // values when the cursor's is non-null; `tailSql` then selects the null
-    // tail that sorts after them, read only if the first query falls short.
-    let whereSql = combineAnd(sql, base);
-    let tailSql: Fragment | null = null;
-    if (params.cursor !== undefined && params.cursor !== '') {
-      const cursor = decodeCursor(params.cursor, orderBy);
-      const cursorFragment = buildCursorCompare(
-        sql,
-        orderBy,
-        cursor.orderByValues,
-        cursor.id,
-        orderByCastFor,
-        table,
-        computedFor
-      );
-      const tail = buildCursorNullTail(
-        sql,
-        orderBy,
-        cursor.orderByValues,
-        orderByCastFor,
-        table,
-        computedFor
-      );
-      if (tail !== null) tailSql = combineAnd(sql, [...base, tail]);
-      if (cursorFragment !== null) whereSql = combineAnd(sql, [...base, cursorFragment]);
-    }
-    const orderBySql = buildOrderBy(sql, orderBy, orderByCastFor, table, computedFor, 'r');
-
-    // Fetch one extra row to determine hasMore without a count query.
-    const fetchLimit = limit !== undefined ? limit + 1 : undefined;
-
-    // Ships only the requested top-level body keys when `fields` is given,
-    // else the full body.
-    // Walk selections come back as their own columns, merged into the body before `materialize`.
-    const walk =
-      scope === undefined
-        ? null
-        : buildWalkColumns(sql, frameAggs, params.nested ?? {}, table, scope);
-    const rowProjection = buildRowProjection(sql, table, params.fields, 'r', walk?.select ?? null);
-
-    // Projects each sort key so the cursor value comes from the same
-    // expression that sorted. A promoted field sorts on its column but
-    // materializes from the body; if those disagree, a body-derived cursor
-    // value repeats the same page forever.
-    const { fragment: sortKeyProjection, aliases: sortKeyAliases } = buildSortKeyProjection(
-      sql,
-      orderBy,
-      bodyCastFor,
-      table,
-      computedFor
-    );
-
-    // With `joinShortIds`, short_ids joins before LIMIT. Otherwise the page
-    // query runs alone, with nothing parallel-restricted in it, and short_ids
-    // is probed once per row it returns: the LIMIT keeps the lateral lookup
-    // from being flattened into a join that a generic plan may hash over the
-    // type's whole short_ids. short_ids_row_uniq_idx makes either form match
-    // at most one row. The outer ORDER BY restores the page order over the
-    // projected sort keys. A type table's row carries no namespace or type, so
-    // its own are selected as literals.
-    const owner = sql.unsafe(
-      `${sqlStringLiteral(this.namespace)}::text AS namespace, ${sqlStringLiteral(type)}::text AS type`
-    );
-    const ownerOn = sql.unsafe(
-      `s.namespace = ${sqlStringLiteral(this.namespace)} AND s.type = ${sqlStringLiteral(type)}`
-    );
-    // Inlined so a generic plan costs the page at its real size rather than
-    // guessing 10% of the type, which favours a parallel full sort over an
-    // index. Safe to inline: `n` derives from `limit`, which is validated and
-    // floored above, and `BigInt()` throws on a non-integer.
-    const inlineLimit = (n: number | undefined): Fragment =>
-      n !== undefined ? sql.unsafe(`LIMIT ${BigInt(n)}`) : sql``;
-    // One page query: phase 1 with the cursor compare, or the null tail.
-    // A read that names its fields gets the metadata columns and short_ids
-    // lookup only when it asks for them; the transport would drop them anyway.
-    // Each `select` value is one column of the page, shipped as the text the evaluator's value reads from (a date as `utcTextSql(.., 'US')` prints it).
-    const selectColumns = selectEntries.map(([name], i) => {
-      const fragment =
-        fenced !== undefined && name === lead
-          ? sql`r.__computed_0`
-          : (selectFragments.get(name) as Fragment);
-      const alias = sql(`__sel_${i}`);
-      switch (selectTypes.get(name)) {
-        case 'date':
-          return sql`, to_char((${fragment}) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS ${alias}`;
-        case 'int64':
-          return sql`, (${fragment})::text AS ${alias}`;
-        default:
-          return sql`, ${fragment} AS ${alias}`;
-      }
-    });
-    const selectProjection =
-      selectColumns.length === 0 ? sql`` : (selectColumns as unknown as Fragment);
-    const withMeta = readsRowMetadata(params.fields);
-    const withShortId = readsShortId(params.fields);
-    const metaColumns = withMeta
-      ? sql`, r.created_at, r.updated_at,
-                 r.created_by_kind, r.created_by_id,
-                 r.updated_by_kind, r.updated_by_id, r.seq`
-      : sql``;
-    const statement = (where: Fragment, n: number | undefined) =>
-      joinShortIds
-        ? sql`
-          SELECT r.id, ${rowProjection}, r.deleted_at, s.short_id${metaColumns}${selectProjection}${sortKeyProjection}
-          FROM ${from}
-          LEFT JOIN short_ids s
-            ON ${ownerOn}
-           AND s.row_id = r.id
-          WHERE ${where}
-          ${orderBySql}
-          ${n !== undefined ? sql`LIMIT ${n}` : sql``}
-        `
-        : sql`
-          SELECT p.*${withShortId ? sql`, s.short_id` : sql``}
-          FROM (
-            SELECT r.id, ${rowProjection}, r.deleted_at${metaColumns},
-                   ${owner}${selectProjection}${sortKeyProjection}
-            FROM ${from}
-            WHERE ${where}
-            ${orderBySql}
-            ${inlineLimit(n)}
-          ) p
-          ${
-            withShortId
-              ? sql`LEFT JOIN LATERAL (
-            SELECT s.short_id FROM short_ids s
-            WHERE s.namespace = p.namespace AND s.type = p.type AND s.row_id = p.id
-            LIMIT 1
-          ) s ON true`
-              : sql``
-          }
-          ${buildProjectedOrderBy(sql, orderBy, sortKeyAliases, orderByCastFor, table, 'p', computedFor)}
-        `;
-    // The CTEs ride in front only when there are any, so a plain read's text
-    // is exactly what it was (callers and tests key on its leading SELECT).
-    const page = (where: Fragment, n: number | undefined) =>
-      scope?.ctes === undefined || scope.ctes.length === 0
-        ? statement(where, n)
-        : sql`${ctes}${statement(where, n)}`;
-
-    // Both queries read the same snapshot only inside a REPEATABLE READ or
-    // SERIALIZABLE transaction; elsewhere each sees its own.
-    let rows = await run<TableRowRecord>(page(whereSql, fetchLimit), 'id');
-    if (tailSql !== null && (fetchLimit === undefined || rows.length < fetchLimit)) {
-      // A row whose lead turned null after the first query would come back
-      // twice; excluding it in SQL keeps the look-ahead row, and so `hasMore`.
-      // The residual anomaly is a skip: a row that left the tail in between.
-      const unseen = sql`r.id <> ALL(${rows.map((r) => r.id)})`;
-      // The full `fetchLimit`, sliced here, so the tail has one statement text
-      // per shape rather than one per remaining count.
-      // It recomputes the read's CTEs (#1815): a CTE lives for one statement,
-      // and the tail runs only when a cursor reaches the null-keyed rows.
-      const tail = await run<TableRowRecord>(
-        page(combineAnd(sql, [tailSql, unseen]), fetchLimit),
-        'id'
-      );
-      // concat, not push(...): an unlimited tail can exceed the argument limit.
-      rows = rows.concat(fetchLimit === undefined ? tail : tail.slice(0, fetchLimit - rows.length));
-    }
-
-    const fields = this.#typeDefLookup?.(type, this.namespace)?.fields;
-    const orders = new Map<string, string[]>();
-    // An int64 `_agg` value or nested-row field is a decimal string in the jsonb; the row holds a bigint, as memory's.
-    const int64 = int64Plan(frameAggs, params.nested, seed, fieldDef);
-    const materialised: Row[] = new Array(rows.length);
-    for (let i = 0; i < rows.length; i++) {
-      // A large read yields between batches, so other requests are not held behind it.
-      if (i > 0 && i % MATERIALIZE_BATCH_ROWS === 0)
-        await new Promise<void>((resolve) => setImmediate(resolve));
-      const r = rows[i] as TableRowRecord;
-      const row = this.materialize(
-        walk === null ? r : mergeWalkColumns(r, walk.columns, orders),
-        fields,
-        table,
-        params.fields
-      );
-      if (int64 !== undefined) decodeInt64(row, int64);
-      for (const [k, [name]] of selectEntries.entries()) {
-        const v = (r as unknown as Record<string, unknown>)[`__sel_${k}`];
-        row[name] =
-          v === null || v === undefined
-            ? null
-            : selectTypes.get(name) === 'int64'
-              ? BigInt(v as string)
-              : v;
-      }
-      materialised[i] = row;
-    }
-    let hasMore = false;
-    let sliced = materialised;
-    if (limit !== undefined && materialised.length > limit) {
-      hasMore = true;
-      sliced = materialised.slice(0, limit);
-    }
-
-    const out: ReadResult = { rows: sliced, hasMore };
-    const last = sliced[sliced.length - 1];
-    // `materialised` is `rows.map(...)`, so index i of one is index i of the
-    // other — the raw record is where the projected sort keys live.
-    const lastRaw = rows[sliced.length - 1] as Record<string, unknown> | undefined;
-    if (hasMore && last !== undefined) {
-      out.nextCursor = encodeCursor({
-        // Read from the projected `__sort_<n>` keys, never the materialized
-        // row, which carries only what the caller projected.
-        orderByValues: orderBy
-          .filter(([f]) => f !== 'id')
-          .map(([field]) => {
-            const alias = sortKeyAliases.get(field);
-            return alias === undefined ? null : (lastRaw?.[alias] ?? null);
-          }),
-        id: last.id,
-        order: orderBy
-      });
-    }
-
-    // Relevance reorder applies only when the caller gave no orderBy; test
-    // params.orderBy, since the normalized one always has an id tiebreaker.
-    if (extMeta !== null) {
-      out.rows = applyExtensionResultMeta(out.rows, extMeta, {
-        hasExplicitOrderBy: params.orderBy !== undefined && params.orderBy.length > 0,
-        fields: params.fields
-      });
-    }
-    return out;
   }
 
   /**
@@ -1270,11 +621,11 @@ export class PgDataset implements Dataset {
         actor: options?.identity ?? null,
         ...(options?.now !== undefined ? { now: options.now } : {})
       })}`.catch((err: unknown) => {
-        throw this.#uniqueViolation(type, err);
+        throw uniqueViolation(this.#ctx, type, err);
       })) as unknown as GuardedRecord[];
     });
     const fields = this.#typeDefLookup?.(type, this.namespace)?.fields;
-    const merged = written.records.map((r) => this.materialize(r, fields, written.table));
+    const merged = written.records.map((r) => materialize(r, fields, written.table));
     return { written: merged.length, ids: merged.map((r) => r.id), rows: merged };
   }
 
@@ -1364,7 +715,7 @@ export class PgDataset implements Dataset {
       RETURNING r.id, r.extra AS body
     `;
 
-    const stamped: Id[] = rows.map((r) => this.extractOriginalId(r.id, r.body));
+    const stamped: Id[] = rows.map((r) => extractOriginalId(r.id, r.body));
     return { deleted: stamped.length, ids: stamped };
   }
 
@@ -1385,7 +736,7 @@ export class PgDataset implements Dataset {
       )
       SELECT id, body FROM d`;
 
-    const removed: Id[] = rows.map((r) => this.extractOriginalId(r.id, r.body));
+    const removed: Id[] = rows.map((r) => extractOriginalId(r.id, r.body));
     return { deleted: removed.length, ids: removed };
   }
 
@@ -1506,7 +857,8 @@ export class PgDataset implements Dataset {
     };
     const stamp = sql`updated_at = ${now === undefined ? sql`now()` : sql`${now}`},
       updated_by_kind = ${(actor ?? ANONYMOUS).kind}, updated_by_id = ${(actor ?? ANONYMOUS).id}`;
-    const [row] = await this.#patchTable(
+    const [row] = await patchTable(
+      this.#ctx,
       type,
       table,
       [{ id: idToText(id), patch: sanitisedUpdates }],
@@ -1546,7 +898,8 @@ export class PgDataset implements Dataset {
       return;
     }
     // No metadata stamp, and a tombstoned row is set too.
-    await this.#patchTable(
+    await patchTable(
+      this.#ctx,
       ref.type,
       table,
       [{ id: idToText(ref.id), patch: { [fieldName]: value ?? null } }],
@@ -1739,7 +1092,8 @@ export class PgDataset implements Dataset {
     const table = await this.#tableFor(type);
     if (table === undefined) return patches.map(() => null);
     const updatedBy = actor ?? ANONYMOUS;
-    const rows = await this.#patchTable(
+    const rows = await patchTable(
+      this.#ctx,
       type,
       table,
       ids.map((id) => ({ id, patch: folded.get(id) ?? {} })),
@@ -1750,69 +1104,6 @@ export class PgDataset implements Dataset {
     );
     const byId = new Map(rows.map((r) => [idToText(r.id), r]));
     return patches.map((p) => byId.get(idToText(p.id)) ?? null);
-  }
-
-  /**
-   * Merges each patch into its row of type table `table` in one statement, by
-   * `applyPatch`'s rule, and returns the rows it changed. `stamp` adds SET
-   * items; `match` must also hold on the stored row. `live`: only live rows,
-   * locked in id order first, so overlapping concurrent batches queue instead
-   * of deadlocking.
-   */
-  async #patchTable(
-    type: string,
-    table: TypeTable,
-    patches: ReadonlyArray<{ id: string; patch: Record<string, unknown> }>,
-    stamp: Fragment | null,
-    match: ((table: TypeTable) => Fragment) | null,
-    live: boolean
-  ): Promise<Row[]> {
-    const ids = patches.map((p) => p.id);
-    const written = await this.#guarded(type, table, (t) =>
-      this.#patchStatement(type, t, patches, ids, stamp, match?.(t) ?? null, live)
-    );
-    const fields = this.#typeDefLookup?.(type, this.namespace)?.fields;
-    return written.records.map((r) => this.materialize(r, fields, written.table));
-  }
-
-  /** {@link #patchTable}'s one statement, built for `table`. */
-  async #patchStatement(
-    type: string,
-    table: TypeTable,
-    patches: ReadonlyArray<{ id: string; patch: Record<string, unknown> }>,
-    ids: string[],
-    stamp: Fragment | null,
-    match: Fragment | null,
-    live: boolean
-  ): Promise<GuardedRecord[]> {
-    const sql = this.#sql;
-    const rel = sql.unsafe(table.from);
-    const encoded = patches.map((p) => ({ ...encodeRow(table, p.patch), id: p.id }));
-    // Gated on the guard, so a refused (stale) patch locks no row (M7).
-    const locked = live
-      ? sql`,
-      locked AS MATERIALIZED (
-        SELECT count(*) AS n FROM (
-          SELECT t.id FROM ${rel} t
-          WHERE t.id = ANY(${ids}::text[]) AND t.deleted_at IS NULL AND (SELECT ok FROM guard)
-          ORDER BY t.id
-          FOR NO KEY UPDATE OF t
-        ) x
-      )`
-      : sql``;
-    return (await sql`
-      WITH ${inputCte(sql, table, encoded)}${locked},
-      updated AS (
-        UPDATE ${rel} t
-        SET ${sql.unsafe(setList(mergeAssignments(table, 't', 'i', encoded)))}${stamp === null ? sql`` : sql`, ${stamp}`}
-        FROM input i${live ? sql`, locked` : sql``}
-        WHERE t.id = i.rid${live ? sql` AND t.deleted_at IS NULL` : sql``}${match === null ? sql`` : sql` AND ${match}`}
-        RETURNING t.*
-      )
-      ${guardedRows(sql, sql`SELECT ${returnedRowSql(sql, table, 'u')} FROM updated u ${sql.unsafe(shortIdJoinSql(table, 'u.id'))}`)}
-    `.catch((err: unknown) => {
-      throw this.#uniqueViolation(type, err);
-    })) as unknown as GuardedRecord[];
   }
 
   async updateWhere(
@@ -1840,10 +1131,10 @@ export class PgDataset implements Dataset {
         assign: sql`${sql.unsafe(setList(mergeAssignments(t, 'r', 'i', rows)))}, ${stamp}`
       };
     };
-    return this.#filterWrite(type, where, opts.maxMatch, build, false, table).catch(
+    return filterWrite(this.#ctx, type, where, opts.maxMatch, build, false, table).catch(
       (err: unknown) => {
         // A set onto a declared unique index's values: refused as `patchRows` refuses it.
-        throw this.#uniqueViolation(type, err);
+        throw uniqueViolation(this.#ctx, type, err);
       }
     );
   }
@@ -1856,7 +1147,8 @@ export class PgDataset implements Dataset {
     const table = await this.#tableFor(type);
     if (table === undefined) return { count: 0, ids: [], rows: [] };
     const assign = this.#sql`deleted_at = now()`;
-    return this.#filterWrite(
+    return filterWrite(
+      this.#ctx,
       type,
       where,
       opts.maxMatch,
@@ -1864,98 +1156,6 @@ export class PgDataset implements Dataset {
       true,
       table
     );
-  }
-
-  /**
-   * One statement: `m` locks up to `maxMatch + 1` live matches, `u` writes
-   * them only when there are at most `maxMatch`, re-testing `where` on each,
-   * and the outer select always returns one row carrying `count(m)`, so a
-   * too-broad filter tells from zero matches. Under READ COMMITTED a row a
-   * concurrent writer changed is re-tested on its new version after the lock
-   * (`FOR UPDATE`), so one moved out of the filter is neither locked nor
-   * written. Locks are taken in id order, so overlapping filter writes queue
-   * rather than deadlock. `preImage` returns the rows without the write's
-   * `deleted_at`. `build` gives, for the table the write is built for, the
-   * SET list and the CTE `assign` reads as `i` (when it reads one). A stale
-   * table's guard matches nothing, and the write is rebuilt (`#guarded`).
-   */
-  async #filterWrite(
-    type: string,
-    where: WhereClause,
-    maxMatch: number,
-    build: (table: TypeTable) => { input: Fragment | null; assign: Fragment },
-    preImage: boolean,
-    table: TypeTable
-  ): Promise<FilterWriteResult> {
-    // k as memory's read passes it: the match limit.
-    const { where: resolved } = await preResolveExtensionOperatorsDetailed(where, {
-      namespace: this.namespace,
-      type,
-      k: maxMatch + 1
-    });
-    // shortId lives on the sidecar, so a where that reads it joins short_ids, as `read` does.
-    const joinShortIds = whereReferencesField(resolved, 'shortId');
-    const fields = this.#typeDefLookup?.(type, this.namespace)?.fields;
-    const written = await this.#guarded(type, table, async (t) => {
-      const { input, assign } = build(t);
-      const records = await this.#filterStatement(
-        t,
-        resolved,
-        joinShortIds,
-        maxMatch,
-        input,
-        assign
-      );
-      const head = records[0];
-      if (head?.ok === true && head.matched > maxMatch) {
-        throw filterTooBroad(this.namespace, type, maxMatch);
-      }
-      return records;
-    });
-    const rows = written.records.map((r) => {
-      const row = this.materialize(r, fields, written.table);
-      if (preImage) delete row._deletedAt;
-      return row;
-    });
-    return { count: rows.length, ids: rows.map((r) => r.id), rows };
-  }
-
-  /** {@link #filterWrite}'s one statement, built for `table`. */
-  async #filterStatement(
-    table: TypeTable,
-    resolved: WhereClause,
-    joinShortIds: boolean,
-    maxMatch: number,
-    input: Fragment | null,
-    assign: Fragment
-  ): Promise<Array<GuardedRecord & { matched: number }>> {
-    const sql = this.#sql;
-    const filter = buildWhere(sql, resolved, this.#castFor(table.type), table) ?? sql`true`;
-    const rel = sql.unsafe(table.from);
-    // The UPDATE target cannot appear in a FROM join's ON, so the sidecar joins on m.
-    const sidecar = (id: string) => (joinShortIds ? sql.unsafe(shortIdJoinSql(table, id)) : sql``);
-    return (await sql`
-      WITH ${input ?? guardCte(sql, table)},
-      m AS (
-        SELECT r.id AS mid FROM ${rel} r ${sidecar('r.id')}
-        WHERE (SELECT ok FROM guard) AND ${filter} AND r.deleted_at IS NULL
-        ORDER BY r.id
-        LIMIT ${maxMatch + 1}
-        FOR UPDATE OF r
-      ),
-      u AS (
-        UPDATE ${rel} r SET ${assign}
-        FROM m ${sidecar('m.mid')}${input === null ? sql`` : sql`, input i`}
-        WHERE r.id = m.mid
-          AND (SELECT count(*) FROM m) <= ${maxMatch}
-          AND ${filter} AND r.deleted_at IS NULL
-        RETURNING r.*
-      )
-      SELECT g.ok, (SELECT count(*) FROM m)::int AS matched, ${returnedRowSql(sql, table, 'u')}
-      FROM guard g
-      LEFT JOIN u ON true
-      ${sql.unsafe(shortIdJoinSql(table, 'u.id'))}
-    `) as unknown as Array<GuardedRecord & { matched: number }>;
   }
 
   /**
@@ -1972,14 +1172,6 @@ export class PgDataset implements Dataset {
       ...(lookup !== null ? { fieldDefLookup: lookup } : {}),
       ...(factory !== null ? { fieldDefLookupFor: factory } : {})
     };
-  }
-
-  /** A body field's declared kind as the cast its extraction takes; null when undeclared. */
-  #castFor(type: string): (field: string) => BodyOrderByCast | null {
-    return (field) =>
-      this.#fieldDefLookup === null
-        ? null
-        : resolveBodyOrderByCast(this.#fieldDefLookup(type, field));
   }
 
   async getShortIdForRow(type: string, rowId: string): Promise<number | null> {
@@ -2057,61 +1249,8 @@ export class PgDataset implements Dataset {
     });
     // Committed: drop the cached table now rather than when the notification lands.
     dropTableCache(this.#tableCache, `${this.namespace}/${type}`);
-    await this.#reconcileIndexes(type, opts);
+    await reconcileIndexes(this.#ctx, type, opts);
     return { pending: change.pending };
-  }
-
-  /** `ensureTypeStorage`'s index pass: reconciles, then records each state for the reports. */
-  async #reconcileIndexes(
-    type: string,
-    opts: { indexes?: 'all' | 'unique' | 'nonUnique'; signal?: AbortSignal }
-  ): Promise<void> {
-    const sql = this.#sql as Sql;
-    const builds = this.#deferredBuilds();
-    const qualified = `${this.namespace}/${type}`;
-    const record = (s: IndexState): void => {
-      if (s.state === 'pending' || s.state === 'failed') {
-        builds.set(s.name, {
-          state: s.state,
-          type: qualified,
-          ...(s.error !== undefined ? { error: s.error } : {}),
-          ...(s.reason !== undefined ? { reason: s.reason } : {})
-        });
-      } else {
-        builds.delete(s.name);
-      }
-    };
-    let states: IndexState[];
-    try {
-      states = await reconcileTypeIndexes(sql, this.#indexArgs(type, this.namespace), {
-        only: opts.indexes ?? 'all',
-        onBuild: (name) => builds.set(name, { state: 'building', type: qualified }),
-        onState: record,
-        ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
-        ...(this.#diskGuard !== undefined ? { diskGuard: this.#diskGuard } : {})
-      });
-    } catch (err) {
-      // Only the indexes this pass had not settled; one it settled keeps its state.
-      const code = (err as { code?: unknown }).code;
-      const reason = `${typeof code === 'string' ? code : 'error'}: ${
-        (err instanceof Error ? err.message : String(err)).split('\n')[0]
-      }`;
-      for (const b of builds.values()) {
-        if (b.type === qualified && b.state !== 'failed') {
-          b.state = 'failed';
-          b.error = reason;
-          delete b.reason;
-        }
-      }
-      throw err;
-    }
-    for (const s of states) {
-      record(s);
-      if (s.outcome === 'unchanged') continue;
-      process.stdout.write(
-        `[substrate] index ${s.name} on ${this.namespace}/${type}: ${s.outcome} (${s.state})\n`
-      );
-    }
   }
 
   /**
@@ -2139,7 +1278,7 @@ export class PgDataset implements Dataset {
       reconcile: async (namespace, type) => {
         const view =
           namespace === this.namespace ? this : (this.forNamespace(namespace) as PgDataset);
-        await view.#reconcileIndexes(type, signal !== undefined ? { signal } : {});
+        await reconcileIndexes(view.#ctx, type, signal !== undefined ? { signal } : {});
       }
     });
   }
@@ -2150,577 +1289,61 @@ export class PgDataset implements Dataset {
     return { connections, opening, idle, leased, waiting };
   }
 
-  /**
-   * See `Dataset.fieldWarnings`. Store-wide; none before the store is migrated. Counts
-   * only, since `/health` shows it unauthenticated: the named lines are in
-   * `storageReport`, which is admin-gated.
-   */
-  async fieldWarnings(): Promise<string[]> {
-    if ((await this.#layout()) === 'absent') return [];
-    const lines = await this.#fieldLines();
-    const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
-    const pending = lines.filter((l) => l.state === 'pending').length;
-    const failed = lines.filter((l) => l.failed).length;
-    const orphaned = lines.filter((l) => l.state === 'orphaned').length;
-    // Never scans on this (unauthenticated) path: the last count, if any.
-    const misfits = (
-      cachedMisfitCount(this.#sql, () => countMisfits(this.#sql as Sql)) ?? []
-    ).reduce((n, m) => n + m.count, 0);
-    const parts = [
-      ...(pending > 0
-        ? [plural(pending, 'field pending promotion', 'fields pending promotion')]
-        : []),
-      ...(failed > 0 ? [plural(failed, 'promotion failed', 'promotions failed')] : []),
-      ...(orphaned > 0 ? [plural(orphaned, 'field orphaned', 'fields orphaned')] : []),
-      ...(misfits > 0 ? [plural(misfits, 'misfit kept under $raw', 'misfits kept under $raw')] : [])
-    ];
-    return parts.length === 0 ? [] : [`${parts.join('; ')} — see the storage report`];
+  /** See `Dataset.fieldWarnings`. */
+  fieldWarnings(): Promise<string[]> {
+    return fieldWarnings(this.#ctx);
   }
 
-  /**
-   * Each field an operator should know about, by name: a pending one, one
-   * whose promotion failed (an error other than busy or stopped, or a busy or
-   * stopped one {@link PROMOTION_FAILED_AFTER} attempts in a row), one busy
-   * short of that, and an orphaned one.
-   */
-  async #fieldLines(): Promise<Array<{ state: string; failed: boolean; line: string }>> {
-    const rows = await this.#sql<
-      Array<{
-        namespace: string;
-        type: string;
-        field: string;
-        state: string;
-        attempts: number;
-        last_error: string | null;
-      }>
-    >`
-      SELECT namespace, type, field, state, attempts, last_error FROM substrate_type_fields
-      WHERE state IN ('pending', 'orphaned')
-         OR (state IN ('promoting', 'column') AND last_error IS NOT NULL)
-      ORDER BY namespace COLLATE "C", type COLLATE "C", field COLLATE "C"`;
-    return rows.map((r) => {
-      const name = `${r.namespace}/${r.type}.${r.field}`;
-      const failed =
-        r.last_error !== null &&
-        (!isTransientPromotionError(r.last_error) || r.attempts >= PROMOTION_FAILED_AFTER);
-      const line = failed
-        ? `${name} promotion failed (attempt ${r.attempts}): ${r.last_error}`
-        : r.state === 'orphaned'
-          ? `${name} is orphaned: no longer declared; values readable as extras`
-          : r.state === 'pending'
-            ? `${name} is pending: held in jsonb until promoted (attempt ${r.attempts})`
-            : `${name} is ${(r.last_error ?? '').replace(/^(busy|stopped): /, (_, kind) => `${kind} (attempt ${r.attempts}): `)}, retried next sweep`;
-      return { state: r.state, failed, line };
-    });
+  /** The type's non-unique indexes the next build pass would build or swap. */
+  pendingIndexBuilds(type: string): Promise<Array<{ name: string; estimateBytes: number }>> {
+    return pendingIndexBuilds(this.#ctx, type);
   }
 
-  #deferredBuilds(): Map<string, DeferredBuild> {
-    const builds = deferredBuilds.get(this.#sql) ?? new Map<string, DeferredBuild>();
-    deferredBuilds.set(this.#sql, builds);
-    return builds;
+  /** See `Dataset.describeStorage`. */
+  describeStorage(type: string): Promise<TypeStorageReport> {
+    return describeStorage(this.#ctx, type);
   }
 
-  /** Each index's catalog state, overridden by what this process knows of its build. */
-  #withBuilds(states: IndexState[]): IndexState[] {
-    const builds = this.#deferredBuilds();
-    return states.map((s) => {
-      const build = builds.get(s.name);
-      if (build === undefined) return s;
-      // A catalog state carries no `error`.
-      return {
-        ...s,
-        state: build.state,
-        ...(build.error !== undefined ? { error: build.error } : {}),
-        ...(build.reason !== undefined ? { reason: build.reason } : {})
-      };
-    });
-  }
-
-  /**
-   * A write's error as the caller should see it: a declared unique index's
-   * conflict (23505) becomes `unique_violation` naming the index and its
-   * fields; anything else is returned unchanged.
-   */
-  #uniqueViolation(type: string, err: unknown): unknown {
-    const pgErr = err as { code?: unknown; constraint_name?: unknown };
-    if (pgErr?.code !== '23505' || typeof pgErr.constraint_name !== 'string') return err;
-    const index = pgErr.constraint_name;
-    // No query: the failed statement may have aborted this transaction.
-    const declared = desiredIndexKeys(this.#indexArgs(type, this.namespace)).find(
-      (d) => d.name === index
-    );
-    const fields = declared?.keys.map(([field]) => field) ?? [];
-    return new ResolverFrameError(
-      'unique_violation',
-      `${this.namespace}/${type}: a row already holds these values for unique index ${index}` +
-        (fields.length > 0 ? ` (${fields.join(', ')})` : ''),
-      { index, fields }
-    );
-  }
-
-  #indexArgs(type: string, namespace: string): ReconcileTypeIndexesArgs {
-    const def = this.#typeDefLookup?.(type, namespace);
-    return {
-      namespace,
-      type,
-      fields: def?.fields ?? {},
-      indexes: def?.indexes ?? [],
-      orderedBy: naturalOrderOf(def ?? {}),
-      ...(def?.ordering !== undefined ? { ordering: def.ordering } : {})
-    };
-  }
-
-  /**
-   * The type's non-unique indexes the next build pass would build or swap,
-   * each with the disk guard's estimate. Empty when the store or the type's
-   * storage does not exist yet. Changes nothing.
-   */
-  async pendingIndexBuilds(type: string): Promise<Array<{ name: string; estimateBytes: number }>> {
-    if ((await this.#layout()) === 'absent') return [];
-    const args = this.#indexArgs(type, this.namespace);
-    if ((await typeTableOf(this.#sql, this.namespace, type)) === undefined) return [];
-    return pendingIndexBuilds(this.#sql as Sql, args);
-  }
-
-  /**
-   * See `Dataset.describeStorage`. Reads the catalog only, in a fixed number of
-   * queries: the type's table, its indexes, and its `pending` and `orphaned`
-   * fields, as the catalog records them.
-   */
-  async describeStorage(type: string): Promise<TypeStorageReport> {
-    const sql = this.#sql as Sql;
-    const name =
-      (await this.#layout()) === 'absent'
-        ? undefined
-        : await typeTableOf(sql, this.namespace, type);
-    const table = name === undefined ? undefined : await loadTypeTable(sql, this.namespace, type);
-    if (name === undefined || table === undefined) {
-      return { layout: 'tables', indexes: [], pending: [], orphaned: [] };
-    }
-    return {
-      layout: 'tables',
-      table: name,
-      indexes: this.#withBuilds(
-        describeTypeIndexes(
-          { ...this.#indexArgs(type, this.namespace), table },
-          await heldIndexes(sql, [name])
-        )
-      ),
-      pending: [...table.pending],
-      orphaned: [...table.orphaned]
-    };
-  }
-
-  /**
-   * See `Dataset.storageReport`. Spans every namespace of the database. Reads
-   * the type tables and every index on them in one query each, so its cost
-   * does not grow with the number of types.
-   */
-  async storageReport(opts: { partitionBudget: number }): Promise<StorageReport> {
-    const layout = await this.#layout();
-    const building = [...this.#deferredBuilds()]
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(
-        ([name, b]) =>
-          `index ${name} on ${b.type} is ${b.state}${b.error !== undefined ? ` (${b.error})` : ''}` +
-          `${b.reason !== undefined ? ` (${b.reason})` : ''}: ` +
-          'filters it would serve scan until it is valid'
-      );
-    if (this.#diskGuard !== undefined && this.#diskGuard.path === undefined) {
-      building.push(
-        'free-disk checks before index builds are off: set SUBSTRATE_INDEX_DISK_PATH to the database volume mount, or to off when the database has no local volume'
-      );
-    }
-    if (layout === 'absent') return { layout: 'tables', warnings: building };
-    const sql = this.#sql as Sql;
-    const info = await openRecommendations(sql);
-    const warnings = [...building];
-    const tables = await sql<Array<{ namespace: string; type: string; table: string }>>`
-      SELECT namespace, type, table_name AS "table" FROM substrate_type_tables`;
-    const held = await heldIndexes(
-      sql,
-      tables.map((t) => t.table)
-    );
-    const heldBy = Map.groupBy(held, (i) => i.table);
-    for (const t of tables) {
-      this.#undeclared(warnings, info, t.namespace, t.type, heldBy.get(t.table) ?? []);
-    }
-    // A failed promotion is a fault; a pending or orphaned field is a state worth showing.
-    for (const f of await this.#fieldLines()) (f.failed ? warnings : info).push(f.line);
-    for (const m of await freshMisfitCount(this.#sql, () => countMisfits(sql))) {
-      info.push(
-        `${m.namespace}/${m.type}.${m.field} has ${m.count} misfit${m.count === 1 ? '' : 's'} kept under $raw: ` +
-          'the column holds NULL for them, so its index does not serve them; write the field again or widen its vocabulary'
-      );
-    }
-    if (tables.length > opts.partitionBudget) {
-      warnings.push(
-        `${tables.length} type tables exceed the budget of ${opts.partitionBudget}: move a namespace to its own instance behind a bridge`
-      );
-    }
-    return { layout: 'tables', warnings, info };
-  }
-
-  /**
-   * Notes, as info, each engine-owned index of a known type that its
-   * declaration no longer asks for: the index advisor recommends its removal
-   * on evidence, so it is not a fault. A type that cannot be checked warns.
-   */
-  #undeclared(
-    warnings: string[],
-    info: string[],
-    ns: string,
-    type: string,
-    own: HeldIndex[]
-  ): void {
-    if (this.#typeDefLookup === null) return;
-    if (this.#typeDefLookup(type, ns) === undefined) {
-      for (const i of own) {
-        if (!isEngineOwned(i)) continue;
-        info.push(
-          `orphaned index ${i.name} on ${ns}/${type}: no registered type owns it; ${i.unique ? 'it is unique, so drop it by hand' : 'a signed propose_index remove drops it'}`
-        );
-      }
-      return;
-    }
-    try {
-      for (const name of undeclaredIndexes(this.#indexArgs(type, ns), own)) {
-        info.push(
-          `undeclared index ${name} on ${ns}/${type}: kept until a signed remove drops it (the index advisor recommends one when it goes unused)`
-        );
-      }
-    } catch (err) {
-      warnings.push(
-        `indexes of ${ns}/${type} could not be checked: ${err instanceof Error ? err.message : String(err)}`
-      );
-    }
+  /** See `Dataset.storageReport`. */
+  storageReport(opts: { partitionBudget: number }): Promise<StorageReport> {
+    return storageReport(this.#ctx, opts);
   }
 
   /** See `Dataset.indexPlan`. */
-  async indexPlan(type: string, namespace: string): Promise<IndexPlan | undefined> {
-    const def = this.#typeDefLookup?.(type, namespace);
-    if (def === undefined || (await this.#layout()) === 'absent') return undefined;
-    // An index over a field not yet `column` serves no read. Every walk read asks (its
-    // plan diagnostics), so through the TableCache like the read itself.
-    const table = await this.#tableFor(type, namespace, true);
-    return {
-      indexes: desiredIndexKeys({
-        ...this.#indexArgs(type, namespace),
-        ...(table !== undefined ? { table } : {})
-      }),
-      ...(def.expectedSize !== undefined ? { expectedSize: def.expectedSize } : {})
-    };
+  indexPlan(type: string, namespace: string): Promise<IndexPlan | undefined> {
+    return indexPlan(this.#ctx, type, namespace);
   }
 
-  /**
-   * See `Dataset.dropEngineIndex`. Checks and drops under the table's index
-   * build lock, so a reconcile cannot rebuild or swap the index in between.
-   * Ownership is the reconciler's marker and generated name on an index of
-   * this type (`typeIndexesOf`); the wanted set is the reconciler's own
-   * (`desiredIndexKeys`), so only a leftover or a retracted declaration goes.
-   * Refuses with `IndexDropRefusedError`.
-   *
-   * The drop waits for every transaction holding a lock on the table, and pg
-   * cannot see a cycle through a caller that waits on this call, so each wait
-   * is bounded by `lockTimeoutMs` (default `DROP_LOCK_TIMEOUT_MS`).
-   */
-  async dropEngineIndex(
+  /** See `Dataset.dropEngineIndex`. */
+  dropEngineIndex(
     type: string,
     name: string,
     opts: { beforeDrop?: () => Promise<void>; lockTimeoutMs?: number } = {}
   ): Promise<void> {
-    const layout = await this.#layout();
-    if (this.#inTx) {
-      throw new Error('PgDataset.dropEngineIndex cannot be called on a tx-bound instance');
-    }
-    const where = `${this.namespace}/${type}`;
-    if (layout === 'absent') {
-      throw new IndexDropRefusedError('unknown_index', `no index ${name} on ${where}`);
-    }
-    const sql = this.#sql as Sql;
-    const find = async () =>
-      (await typeIndexesOf(sql, this.namespace, type)).find((i) => i.name === name);
-    const seen = await find();
-    if (seen === undefined) {
-      throw new IndexDropRefusedError('unknown_index', `no index ${name} on ${where}`);
-    }
-    const conn = await sql.reserve();
-    try {
-      await withTableIndexLock(sql, conn, seen.table, undefined, async () => {
-        // Again under the lock: a reconcile may have swapped or rebuilt it.
-        const index = await find();
-        if (index === undefined) {
-          throw new IndexDropRefusedError('unknown_index', `no index ${name} on ${where}`);
-        }
-        if (!index.engineOwned) {
-          throw new IndexDropRefusedError(
-            'not_engine_owned',
-            `index ${name} on ${where} was not created by substrate; drop it by hand if it must go`
-          );
-        }
-        if (index.unique) {
-          throw new IndexDropRefusedError(
-            'unique_index',
-            `index ${name} on ${where} is unique; retract its declaration instead`
-          );
-        }
-        // Without a lookup the wanted set is unknown, so nothing is a leftover;
-        // a type the lookup does not know is registered nowhere, so all of its
-        // indexes are orphans and none is wanted.
-        const lookup = this.#typeDefLookup;
-        const orphan = lookup !== null && lookup(type, this.namespace) === undefined;
-        const desired =
-          lookup === null ||
-          (!orphan &&
-            (name.endsWith('_base') ||
-              desiredIndexKeys(this.#indexArgs(type, this.namespace)).some(
-                (d) => d.name === name
-              )));
-        if (desired) {
-          throw new IndexDropRefusedError(
-            'still_desired',
-            `index ${name} on ${where} is one the engine builds for this type; dropping it would only rebuild it`
-          );
-        }
-        await opts.beforeDrop?.();
-        await dropIndexBounded(conn, name, where, opts.lockTimeoutMs ?? DROP_LOCK_TIMEOUT_MS);
-      });
-    } finally {
-      conn.release();
-    }
+    return dropEngineIndex(this.#ctx, type, name, opts);
   }
 
-  /**
-   * See `Dataset.dropNamespaceIndexes`. The engine-owned indexes on this
-   * namespace's type tables, which a namespace drop empties but keeps. Unique
-   * ones only when `opts.unique`.
-   * Each table's under its index-build lock, CONCURRENTLY; the wait for that
-   * lock and each lock wait of a drop are bounded by `lockTimeoutMs` (default
-   * `DROP_LOCK_TIMEOUT_MS`), past which it throws `index_drop_timeout`.
-   */
-  async dropNamespaceIndexes(
-    opts: { unique?: boolean; lockTimeoutMs?: number } = {}
-  ): Promise<string[]> {
-    if ((await this.#layout()) === 'absent') return [];
-    if (this.#inTx) {
-      throw new Error('PgDataset.dropNamespaceIndexes cannot be called on a tx-bound instance');
-    }
-    const sql = this.#sql as Sql;
-    const ns = this.namespace;
-    const tables = (
-      await sql<Array<{ table_name: string }>>`
-        SELECT table_name FROM substrate_type_tables WHERE namespace = ${ns}`
-    ).map((t) => t.table_name);
-    const timeout = opts.lockTimeoutMs ?? DROP_LOCK_TIMEOUT_MS;
-    const dropped: string[] = [];
-    const conn = await sql.reserve();
-    try {
-      for (const table of tables) {
-        try {
-          await withTableIndexLock(sql, conn, table, AbortSignal.timeout(timeout), async () => {
-            for (const i of await heldIndexes(conn, [table])) {
-              if (!isEngineOwned(i) || (i.unique && opts.unique !== true)) continue;
-              await dropIndexBounded(conn, i.name, ns, timeout);
-              dropped.push(i.name);
-            }
-          });
-        } catch (err) {
-          if (!(err instanceof IndexLockAborted)) throw err;
-          throw new IndexDropRefusedError(
-            'index_drop_timeout',
-            `the index-build lock of ${table} stayed held for over ${timeout} ms; indexes of ${ns} left in place`
-          );
-        }
-      }
-    } finally {
-      conn.release();
-    }
-    return dropped;
+  /** See `Dataset.dropNamespaceIndexes`. */
+  dropNamespaceIndexes(opts: { unique?: boolean; lockTimeoutMs?: number } = {}): Promise<string[]> {
+    return dropNamespaceIndexes(this.#ctx, opts);
   }
 
   /** See `Dataset.indexDeclarationOf`. */
-  async indexDeclarationOf(type: string, name: string): Promise<IndexDecl | undefined> {
-    if ((await this.#layout()) === 'absent') return undefined;
-    const args = this.#indexArgs(type, this.namespace);
-    const others = new Set(desiredIndexKeys({ ...args, indexes: [] }).map((d) => d.name));
-    return args.indexes.find((decl) =>
-      desiredIndexKeys({ ...args, indexes: [decl] }).some(
-        (d) => d.name === name && !others.has(d.name)
-      )
-    );
+  indexDeclarationOf(type: string, name: string): Promise<IndexDecl | undefined> {
+    return indexDeclarationOf(this.#ctx, type, name);
   }
 
-  /**
-   * See `Dataset.typeStats`. Spans every namespace of the database, in a fixed
-   * number of queries: each type table's own statistics; `liveRows` is
-   * `reltuples` (or `n_live_tup` before the first ANALYZE) and counts
-   * tombstoned rows too.
-   */
-  async typeStats(): Promise<TypeStats[]> {
-    if ((await this.#layout()) === 'absent') return [];
-    const sql = this.#sql as Sql;
-    const toStats = (
-      t: {
-        namespace: string;
-        type: string;
-        table: string;
-        liveRows: number;
-        insertsTotal: number;
-        updatesTotal: number;
-        deletesTotal: number;
-      },
-      held: Awaited<ReturnType<typeof heldIndexes>>
-    ): TypeStats => ({
-      namespace: t.namespace,
-      type: t.type,
-      liveRows: Math.round(t.liveRows),
-      insertsTotal: Math.round(t.insertsTotal),
-      updatesTotal: Math.round(t.updatesTotal),
-      deletesTotal: Math.round(t.deletesTotal),
-      indexes: held
-        .filter((i) => i.table === t.table)
-        .map((i) => ({
-          name: i.name,
-          scans: i.scans,
-          lastScanAt: i.lastScanAt,
-          sizeBytes: i.sizeBytes,
-          unique: i.unique,
-          engineOwned: isEngineOwned(i)
-        }))
-    });
-    const tables = await sql<
-      Array<{
-        namespace: string;
-        type: string;
-        table: string;
-        liveRows: number;
-        insertsTotal: number;
-        updatesTotal: number;
-        deletesTotal: number;
-      }>
-    >`
-      SELECT t.namespace, t.type, t.table_name AS "table",
-             (CASE WHEN c.reltuples >= 0 THEN c.reltuples ELSE COALESCE(s.n_live_tup, 0) END)::float8
-               AS "liveRows",
-             COALESCE(s.n_tup_ins, 0)::float8 AS "insertsTotal",
-             COALESCE(s.n_tup_upd, 0)::float8 AS "updatesTotal",
-             COALESCE(s.n_tup_del, 0)::float8 AS "deletesTotal"
-      FROM substrate_type_tables t
-      JOIN pg_class c ON c.relname = t.table_name AND c.relnamespace = current_schema()::regnamespace
-      LEFT JOIN pg_stat_user_tables s ON s.relid = c.oid`;
-    const held = await heldIndexes(
-      sql,
-      tables.map((t) => t.table)
-    );
-    return tables.map((t) => toStats(t, held));
-  }
-
-  /**
-   * `fields` is the type's, which the caller looks up once however many rows it
-   * builds. The row is decoded first; `requested`, a read's `fields`, then
-   * trims the `$raw` entries `decodeRow` overlays, since the projection keeps
-   * `$raw` whole.
-   */
-  private materialize(
-    record: TableRowRecord,
-    fields: Record<string, FieldDef> | undefined,
-    table: TypeTable,
-    requested?: ReadParams['fields']
-  ): Row {
-    const body = decodeRow(table, record);
-    const raw = (record.extra as Record<string, unknown> | null)?.[RAW_KEY];
-    // A `$raw` entry the projection did not ask for is dropped (the projection keeps `$raw` whole).
-    const trimRaw =
-      requested !== undefined && raw !== null && typeof raw === 'object'
-        ? (raw as Record<string, unknown>)
-        : undefined;
-    // Prefer the body.id (preserves number vs string at write time) over the
-    // text PK column when present.
-    const id = this.extractOriginalId(record.id, body);
-    const kept = (k: string): boolean => {
-      if (k === 'id' || k === RESERVED_DELETED_AT || k === '_metadata') return false; // the latter two never stored
-      if (
-        trimRaw !== undefined &&
-        Object.hasOwn(trimRaw, k) &&
-        !Object.hasOwn(requested as object, k)
-      )
-        return false;
-      // A null on a declared scalar or crossRef reads back absent, as on memory.
-      if (body[k] === null && fields !== undefined && Object.hasOwn(fields, k)) {
-        const def = fields[k];
-        if (def !== undefined && isColumnField(def)) return false;
-      }
-      return true;
-    };
-    // Set from the record, over any body key of the same name.
-    const deletedAt = record.deleted_at !== null ? record.deleted_at : undefined;
-    // postgres.js returns bigint columns as strings; shortId values fit safely in Number.
-    const shortId =
-      record.short_id !== null && record.short_id !== undefined
-        ? Number(record.short_id)
-        : undefined;
-    // The read selected the metadata columns only if the projection asks for them.
-    const meta = readsRowMetadata(requested) ? assembleRowMetadata(record) : undefined;
-    const special = (k: string): unknown =>
-      k === RESERVED_DELETED_AT
-        ? deletedAt
-        : k === 'shortId'
-          ? shortId
-          : k === '_metadata'
-            ? meta
-            : undefined;
-
-    // One object, built in its final key order: a projection answers in its own order (#1861), as
-    // memory and the transports do, with `id` leading unless the request places it; then the rest
-    // of the row in column order; then the record's own keys.
-    const out: Row =
-      requested === undefined || !Object.hasOwn(requested, 'id') ? { id } : ({} as Row);
-    if (requested !== undefined) {
-      for (const k of Object.keys(requested)) {
-        if (k === 'id') out.id = id;
-        else if (special(k) !== undefined) out[k] = special(k);
-        else if (Object.hasOwn(body, k) && kept(k)) out[k] = body[k];
-      }
-    }
-    for (const k in body) {
-      if (!Object.hasOwn(out, k) && kept(k)) out[k] = special(k) ?? body[k];
-    }
-    if (deletedAt !== undefined && !Object.hasOwn(out, RESERVED_DELETED_AT))
-      out[RESERVED_DELETED_AT] = deletedAt;
-    if (shortId !== undefined && !Object.hasOwn(out, 'shortId')) out.shortId = shortId;
-    if (meta !== undefined && !Object.hasOwn(out, '_metadata')) out._metadata = meta;
-    return out;
-  }
-
-  private extractOriginalId(textId: string, body: Record<string, unknown>): Id {
-    const bodyId = body.id;
-    if (typeof bodyId === 'number' || typeof bodyId === 'string') return bodyId;
-    return textId;
+  /** See `Dataset.typeStats`. */
+  typeStats(): Promise<TypeStats[]> {
+    return typeStats(this.#ctx);
   }
 }
-
-/** Rows materialised between event-loop yields on a read (a few ms of work). */
-const MATERIALIZE_BATCH_ROWS = 5000;
 
 /** The statement timeout a walk read runs under, in milliseconds, unless a shorter one is set. */
 export const WALK_STATEMENT_TIMEOUT_MS = 30_000;
 
 /** How long `hasRowsLocked` tries for a type's rows lock before answering undefined. */
 const ROWS_LOCK_TRY_MS = 2000;
-
-/** The params that run under the statement timeout: `count: true`, and each non-empty object. */
-function walkParams(params: ReadParams): string[] {
-  const used = (['aggregate', 'agg', 'nested', 'select'] as const).filter((k) => {
-    const v = params[k];
-    return typeof v === 'object' && v !== null && Object.keys(v).length > 0;
-  });
-  return params.count === true ? ['count', ...used] : used;
-}
-
-/** True when a read uses the walk grammar: in its where, or a walk-only param. */
-function usesWalkGrammar(params: ReadParams): boolean {
-  return whereUsesWalks(params.where) || walkParams(params).length > 0;
-}
 
 /**
  * The driver's `QUEUE_TIMEOUT` (no pooled connection came free within
@@ -2741,19 +1364,5 @@ async function busyAware<T>(p: Promise<T>): Promise<T> {
     return await p;
   } catch (err) {
     throw storeBusy(err) ?? err;
-  }
-}
-
-/** Awaits `query`, cancelling the statement in flight when `signal` aborts. */
-async function cancellable<T extends readonly (PgRow | undefined)[]>(
-  query: PendingQuery<T>,
-  signal: AbortSignal | undefined
-): Promise<T> {
-  try {
-    return await query.signal(signal);
-  } catch (err) {
-    // pg reports its own cancel as 57014; surface the caller's reason instead.
-    if (signal?.aborted === true) signal.throwIfAborted();
-    throw err;
   }
 }
