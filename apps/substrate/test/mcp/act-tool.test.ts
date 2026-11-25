@@ -3,12 +3,13 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createActHandler } from '../../src/mcp/handlers.js';
 import {
   buildInstructions,
   buildLeanInstructions,
   schemaOverview
 } from '../../src/mcp/schema-overview.js';
-import { createActHandler, createMcpServer, fetchPending } from '../../src/mcp/server.js';
+import { createMcpServer, fetchPending } from '../../src/mcp/server.js';
 
 const realFetch = globalThis.fetch;
 afterEach(() => {
