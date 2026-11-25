@@ -2,6 +2,20 @@
 
 Releases before 1.0.0-alpha.21 are recorded only in their GitHub release notes.
 
+## 1.0.0-beta.17 (2026-11-24)
+
+Changes since 1.0.0-beta.16. This release closes a guard bypass on mutate arrays, takes `fastembed` out of the ONNX embedder, and makes a revoke retire the kid's directory row.
+
+### Fixed
+
+- **A mutate array no longer skips a guard wrapped around a generated mutation (#344).** A plugin that wraps a resolver with `registry.replace(name, { ...entry, resolver: wrap(entry.resolver) })` carried autoCRUD's `batch` resolver across, and an array under that key called `batch` directly. `Registry.replace` now drops a `batch` that is the previous entry's own when the resolver beside it changed, so each element runs through the wrapper. A plugin that guards generated mutations this way should upgrade.
+- **`act` refuses a bare word beside a reference (#344).** `update Todo #17 unblock` failed in the resolver as `not_found`; it is now refused before anything runs, and offers `unblock Todo #17` when the word is an action on the type.
+
+### Changed
+
+- **The ONNX embedder runs on `onnxruntime-node` and `@huggingface/tokenizers`, not `fastembed` (#343).** A deployment with `embedder.kind: 'onnx'` must install both: `onnxruntime-node@^1.30.0` and `@huggingface/tokenizers@^0.2.0`; `substrate init` scaffolds them. `fastembed` can be removed. Vectors match the old ones to a cosine of 0.999999 or better on the models compared (`all-MiniLM-L6-v2`, `bge-small-en`, `bge-small-en-v1.5`, `bge-base-en`, `bge-base-en-v1.5`), so no re-embed is needed. Models are fetched to `<cacheDir>/<repo>/`, so a model cached by `fastembed` is downloaded once more.
+- **A revoke sets the kid's directory row inactive (#344).** `PATCH /substrate/v1/_system/keys` with `revoke: true` sets the directory row's active flag to `false` after the revoke commits and answers `directory: { deactivated, frame | reason }`; `substrate-admin revoke` prints the outcome. A directory that cannot be written never blocks the revoke. `identityDirectory.activeField` names the flag (default `active`), and `null` leaves the row alone. `revoke --direct` cannot reach the directory and says so.
+
 ## 1.0.0-beta.16 (2026-11-24)
 
 Changes since 1.0.0-beta.15. This release closes the remaining authorization gaps from the second audit pass, works through its hardening notes, bounds calls that reach a model, and lets `act` drive types whose writes are their plugin's own mutations. No schema version moves and there is no migration. Several requests that used to be answered are now refused or answered differently; they are listed under *Changed* first. **Before upgrading, give `read` to any key that holds `mutate` without it and updates or deletes rows.**
