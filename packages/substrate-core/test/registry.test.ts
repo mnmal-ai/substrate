@@ -89,6 +89,33 @@ describe('Registry', () => {
   });
 });
 
+describe('Registry replace and the batch resolver', () => {
+  const batch = async (): Promise<Array<null>> => [];
+
+  it('drops a batch carried over beside a new resolver', () => {
+    const registry = new Registry();
+    registry.register('deleteTodo', { resolver: noopResolver, batch, kind: 'mutation' });
+    const entry = registry.get('deleteTodo');
+    if (entry === undefined) throw new Error('deleteTodo was not registered');
+    const guarded: Resolver = async (ctx, args) => entry.resolver(ctx, args);
+    registry.replace('deleteTodo', { ...entry, resolver: guarded });
+    expect(registry.get('deleteTodo')?.resolver).toBe(guarded);
+    expect(registry.get('deleteTodo')?.batch).toBeUndefined();
+  });
+
+  it('keeps a batch replaced with the resolver, and one beside an unchanged resolver', () => {
+    const registry = new Registry();
+    registry.register('deleteTodo', { resolver: noopResolver, batch, kind: 'mutation' });
+    const entry = registry.get('deleteTodo');
+    if (entry === undefined) throw new Error('deleteTodo was not registered');
+    registry.replace('deleteTodo', { ...entry, verb: 'delete' });
+    expect(registry.get('deleteTodo')?.batch).toBe(batch);
+    const ownBatch = async (): Promise<Array<null>> => [];
+    registry.replace('deleteTodo', { ...entry, resolver: async () => [], batch: ownBatch });
+    expect(registry.get('deleteTodo')?.batch).toBe(ownBatch);
+  });
+});
+
 describe('Registry verb stamping', () => {
   it('stores and reads back verb on register() and replace(); absent when omitted', () => {
     const registry = new Registry();
