@@ -567,6 +567,76 @@ describe('POST /substrate/v1/_system/keys — atomic write + reporting', () => {
 // Unlike `substrate-admin list`, which reads postgres directly, this read is gated,
 // so a successful answer is evidence the admin credential works.
 
+describe('PATCH /substrate/v1/_system/keys — a revoke retires the directory row', () => {
+  // `default/Todo` stands in for a directory: `title` holds the kid, `done` is the active flag.
+  const directory = { frame: 'default/Todo', kidField: 'title', activeField: 'done' };
+  const KID = 'agent-one@TestHost';
+
+  async function seedAndRevoke(ctx: Ctx): Promise<{ directory: unknown }> {
+    await postKeys(ctx, validBody({ directory: { create: false } }));
+    const seeded = await ctx.server.inject({
+      method: 'POST',
+      path: '/substrate/v1/mutate',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${adminToken()}` },
+      body: Buffer.from(
+        JSON.stringify({
+          'default/createTodo': { params: { title: KID, done: true }, fields: { id: true } }
+        })
+      )
+    });
+    expect(seeded.status, bodyToString(seeded)).toBe(200);
+    const res = await patchKeys(ctx, { kid: KID, revoke: true });
+    expect(res.status, bodyToString(res)).toBe(200);
+    return jsonBody<{ directory: unknown }>(res);
+  }
+
+  async function todoDone(ctx: Ctx): Promise<unknown> {
+    const res = await ctx.server.inject({
+      method: 'POST',
+      path: '/substrate/v1/query',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${adminToken()}` },
+      body: Buffer.from(
+        JSON.stringify({
+          'default/Todo': { params: { where: { title: { eq: KID } } }, fields: { done: true } }
+        })
+      )
+    });
+    return jsonBody<{ data: { 'default/Todo': Array<{ done: unknown }> } }>(res).data[
+      'default/Todo'
+    ][0]?.done;
+  }
+
+  it('sets the row inactive and says so', async () => {
+    const ctx = await mkServer(directory);
+    expect((await seedAndRevoke(ctx)).directory).toEqual({
+      deactivated: true,
+      frame: 'default/Todo'
+    });
+    expect(await todoDone(ctx)).toBe(false);
+  });
+
+  it('leaves the row alone when activeField is null, and when no directory is configured', async () => {
+    const optedOut = await mkServer({ ...directory, activeField: null });
+    expect((await seedAndRevoke(optedOut)).directory).toEqual({
+      deactivated: false,
+      reason: 'opted_out'
+    });
+    expect(await todoDone(optedOut)).toBe(true);
+    const none = await mkServer();
+    expect((await seedAndRevoke(none)).directory).toEqual({
+      deactivated: false,
+      reason: 'not_configured'
+    });
+  });
+
+  it('still revokes when the directory has no such field', async () => {
+    const ctx = await mkServer({ ...directory, activeField: 'noSuchField' });
+    const body = await seedAndRevoke(ctx);
+    expect(body.directory).toMatchObject({ deactivated: false });
+    expect((await keyRows(ctx, KID))[0]?.revokedAt).not.toBeNull();
+  });
+});
+
 async function getKeys(
   ctx: Ctx,
   token: string | null = adminToken(),

@@ -160,7 +160,7 @@ function hostFromKid(kid: string): string | null {
 }
 
 /** Split `'acme/AgentIdentity'` into its parts. */
-function parseDirectoryFrame(frame: string): { ns: string; type: string } | null {
+export function parseDirectoryFrame(frame: string): { ns: string; type: string } | null {
   const slash = frame.indexOf('/');
   if (slash <= 0 || slash === frame.length - 1) return null;
   const ns = frame.slice(0, slash);

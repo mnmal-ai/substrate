@@ -277,6 +277,7 @@ export async function registerCoreRoutes(args: CoreRoutesArgs): Promise<{
       keyPatchRoute(engine, {
         authEnabled: auth !== undefined,
         trustedProxies,
+        ...(identityDirectory !== undefined ? { identityDirectory } : {}),
         ...(adminCapability !== undefined ? { adminCapability } : {})
       }),
       'admin'
