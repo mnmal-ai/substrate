@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { getSubstrateForTest } from './server.js';
+import { getSubstrateForTest } from './http.js';
 
 afterEach(() => vi.restoreAllMocks());
 

@@ -3,7 +3,8 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { HttpResponse, http } from 'msw';
 import { setupServer } from 'msw/node';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
-import { createMcpServer, recall } from '../../src/mcp/server.js';
+import { recall } from '../../src/mcp/handlers.js';
+import { createMcpServer } from '../../src/mcp/server.js';
 
 const BASE = 'http://localhost:19999';
 
