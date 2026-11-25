@@ -9,7 +9,6 @@ import { mountKernelRoute } from '../../src/_kernel.js';
 import {
   createDropNamespaceHandler,
   createDropTypeHandler,
-  createMcpServer,
   createMutateHandler,
   createNlHandler,
   createProposeFieldHandler,
@@ -18,9 +17,10 @@ import {
   createQueryHandler,
   createRunHandler,
   createSchemaHandler,
-  payloadSchema,
-  type ToolResult
-} from '../../src/mcp/server.js';
+  payloadSchema
+} from '../../src/mcp/handlers.js';
+import type { ToolResult } from '../../src/mcp/http.js';
+import { createMcpServer } from '../../src/mcp/server.js';
 import { fixturePlugin } from '../_fixtures/fixture-plugin.js';
 
 /**
