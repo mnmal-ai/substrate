@@ -154,6 +154,18 @@ const near = (r: ReturnType<typeof refusal>, nearest: string) => ({
 });
 
 describe('compileSketch plans', () => {
+  it("takes id in a find's fields, which every row carries anyway", () => {
+    expect(compile('find Todo fields=id,title')).toMatchObject({
+      plan: { steps: [{ fields: { id: true, shortId: true, title: true } }] }
+    });
+  });
+
+  it('clears a nullable field written with an empty value', () => {
+    expect(compile('update Todo #1 notes=')).toMatchObject({
+      plan: { steps: [{ params: { notes: null } }] }
+    });
+  });
+
   it('compiles a declared update action', () => {
     expect(compile('close Todo #2014')).toEqual({
       plan: {
@@ -436,6 +448,12 @@ describe('compileSketch plans', () => {
 });
 
 describe('compileSketch refusals', () => {
+  it('refuses null on a field that is not nullable, however it was written', () => {
+    expect(compile('update Todo #1 title=')).toEqual(
+      refusal(1, 'null', 'title: null is not allowed')
+    );
+  });
+
   it('passes a parser refusal through', () => {
     expect(compile('close Todo "open')).toEqual(refusal(1, '"open', 'unterminated quote'));
   });
@@ -650,6 +668,12 @@ describe('compileSketch refusals', () => {
 });
 
 describe('compileSketch help', () => {
+  it('answers `? define` with how a define step is written', () => {
+    expect(compile('? define')).toEqual({
+      help: { syntax: expect.stringContaining('define <Type>.<name>') }
+    });
+  });
+
   it('lists types and their actions', () => {
     expect(compile('?')).toEqual({
       help: {

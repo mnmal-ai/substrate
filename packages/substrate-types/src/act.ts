@@ -140,6 +140,8 @@ export interface ActHelp {
     }
   >;
   fields?: Record<string, { type: string; required: boolean }>;
+  /** `? define`: how a define step is written. */
+  syntax?: string;
 }
 export interface ActStepOutcome {
   step: number;
