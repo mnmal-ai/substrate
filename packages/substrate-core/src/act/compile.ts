@@ -429,6 +429,19 @@ class Compiler {
     if (step.as !== undefined && refs.length > 1) {
       this.#refuse(`$${step.as}`, 'as needs a single record');
     }
+    // A bare word beside a `#n` or `$name` reference is a misplaced action or a
+    // typo, not a second row id: `update Todo #17 unblock`.
+    const marked = (r: string) => r.startsWith('#') || r.startsWith('$');
+    const stray = refs.some(marked) ? refs.find((r) => !marked(r)) : undefined;
+    if (stray !== undefined) {
+      const actions = [...Object.keys(declared), ...BUILT_IN_ACTIONS];
+      this.#refuse(
+        stray,
+        `'${stray}' is not a reference; join references with commas (#1,#2)`,
+        actions.includes(stray) ? [stray] : [],
+        (s, c) => ({ ...s, action: c, refs: refs.filter((r) => r !== stray) })
+      );
+    }
     this.#expand(
       target,
       step.action,

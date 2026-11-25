@@ -465,6 +465,16 @@ describe('compileSketch refusals', () => {
     expect(compile('close Todo')).toEqual(refusal(1, 'close', 'close needs a reference'));
   });
 
+  it('refuses a bare word beside a reference, offering it as the action when it is one', () => {
+    const problem = (w: string) => `'${w}' is not a reference; join references with commas (#1,#2)`;
+    expect(compile('update Todo #1 close')).toEqual(
+      near(refusal(1, 'close', problem('close'), ['close']), 'close Todo #1')
+    );
+    expect(compile('update Todo #1 frobnicate')).toEqual(
+      refusal(1, 'frobnicate', problem('frobnicate'))
+    );
+  });
+
   it('refuses a create action with a reference', () => {
     expect(compile('create Todo #1 title=x')).toEqual(
       refusal(1, '#1', 'create takes no reference')
