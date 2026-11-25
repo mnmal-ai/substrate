@@ -181,18 +181,26 @@ describe.skipIf(!hasOpenssl())('createH2Fetch', () => {
   });
 
   it('abort signal cancels the stream and rejects with AbortError', async () => {
-    let closed = false;
+    let sawOpen = (): void => {};
+    let sawClose = (): void => {};
+    const opened = new Promise<void>((r) => {
+      sawOpen = r;
+    });
+    const closed = new Promise<void>((r) => {
+      sawClose = r;
+    });
     const s = await start(false, (stream) => {
-      stream.on('close', () => {
-        closed = true;
-      });
+      stream.on('close', sawClose);
+      sawOpen();
     });
     const ac = new AbortController();
     const pending = make()(`${s.url}/hang`, { signal: ac.signal });
-    setTimeout(() => ac.abort(), 50);
+    // Abort once the server holds the stream, so there is a stream for it to see close.
+    await opened;
+    ac.abort();
     await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
-    await new Promise((r) => setTimeout(r, 50));
-    expect(closed).toBe(true);
+    // The server sees the close some time after the client rejects; the test's timeout bounds the wait.
+    await closed;
   });
 
   it("redirect: 'error' rejects on a 3xx", async () => {
@@ -294,18 +302,19 @@ describe.skipIf(!hasOpenssl())('createH2Fetch', () => {
   });
 
   it('cancelling the body resets the server stream', async () => {
-    let closed = false;
+    let sawClose = (): void => {};
+    const closed = new Promise<void>((r) => {
+      sawClose = r;
+    });
     const s = await start(false, (stream) => {
       stream.respond({ ':status': 200 });
       stream.write('first');
-      stream.on('close', () => {
-        closed = true;
-      });
+      stream.on('close', sawClose);
     });
     const res = await make()(`${s.url}/c`);
     await (res.body as ReadableStream<Uint8Array>).cancel();
-    await new Promise((r) => setTimeout(r, 50));
-    expect(closed).toBe(true);
+    // The reset reaches the server some time after cancel() resolves; the test's timeout bounds the wait.
+    await closed;
   });
 
   it('refuses a 3xx under the default redirect mode too', async () => {
