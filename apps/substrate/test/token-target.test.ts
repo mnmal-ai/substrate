@@ -12,7 +12,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { AdminCliEnv } from '../src/admin/env.js';
 import { resolveAdminAuth } from '../src/admin/identity.js';
 import { runKeyListViaRoute, runKeyPatchViaRoute } from '../src/admin/route.js';
-import { getSubstrateForTest } from '../src/mcp/server.js';
+import { getSubstrateForTest } from '../src/mcp/http.js';
 import { h2Server, type StubServer } from './fixtures/h2-server.js';
 
 const env: AdminCliEnv = { SUBSTRATE_ADMIN_TOKEN: 'tok' };
