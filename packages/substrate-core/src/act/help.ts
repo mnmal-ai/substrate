@@ -92,3 +92,10 @@ export function typeHelp(
     }))
   };
 }
+
+/** `? define`: how a define step is written. */
+export const DEFINE_SYNTAX =
+  'define <Type>.<name> [past] field=<value> …: coins an update action. ' +
+  '`field=$` makes a required param named after the field, `$name` names it, a trailing `?` makes it optional, ' +
+  '`field=now` sets a date to the server time, `field=null` clears a field. ' +
+  'E.g. `define Todo.unblock unblocked status=open blockedBy=null`, then `unblock Todo #6`.';

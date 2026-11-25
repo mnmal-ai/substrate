@@ -79,6 +79,25 @@ describe('parseSketch', () => {
     });
   });
 
+  it('reads a bare empty value as null and a quoted one as the empty string', () => {
+    expect(parseSketch('update Todo #1 blockedBy= notes=""')).toMatchObject({
+      steps: [{ args: { blockedBy: null, notes: '' } }]
+    });
+  });
+
+  it('offers the action first for a step that leads with Type.word', () => {
+    expect(parseSketch('count Todo; Todo.unblock #6 notes="a b"')).toEqual({
+      refusal: {
+        code: 'sketch_unresolved',
+        step: 2,
+        token: 'Todo.unblock',
+        problem: 'bad action: the action comes before the type',
+        choices: [],
+        nearest: 'count Todo; unblock Todo #6 notes="a b"'
+      }
+    });
+  });
+
   it('keeps a newline inside quotes in one step', () => {
     expect(parseSketch('create Note body="a\nb"')).toMatchObject({
       steps: [{ args: { body: 'a\nb' } }]

@@ -25,7 +25,7 @@ import {
   toActionSchema
 } from '@mnmal-ai/substrate-types';
 import { clipToken, coerceValue, TOKEN_ECHO } from './coerce.js';
-import { typeHelp, typesHelp } from './help.js';
+import { DEFINE_SYNTAX, typeHelp, typesHelp } from './help.js';
 import { formatSketch, formatStep, formatValue, parseSketch, REF } from './parse.js';
 
 export interface CompileOptions {
@@ -177,6 +177,13 @@ class Compiler {
     const helps = helpAt.map((i) => {
       const step = this.#at(i + 1).#step;
       if (step.type === undefined) return typesHelp(this.schema);
+      // `? define`, unless a type is named `define`.
+      if (
+        step.type === 'define' &&
+        !Object.values(this.schema).some((s) => Object.hasOwn(s.types, 'define'))
+      ) {
+        return { syntax: DEFINE_SYNTAX };
+      }
       const target = this.#resolveType(step.type);
       return typeHelp(target.qualified, target.type, (this.schema[target.ns] as Schema).mutations);
     });
@@ -716,6 +723,8 @@ class Compiler {
       if (action === 'find' && arg === 'fields') {
         const list = asList(raw);
         for (const [i, f] of list.entries()) {
+          // Every find row carries its id, so naming it asks for nothing more.
+          if (f === 'id') continue;
           if (typeof f !== 'string' || !Object.hasOwn(fields, f))
             unknown(String(f), swapElement(arg, list, i));
           select[f as string] = true;

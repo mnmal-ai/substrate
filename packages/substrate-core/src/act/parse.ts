@@ -1,6 +1,7 @@
 /**
  * Sketch text to `ActStep[]`, and back. Pure: no registry, no coercion. Every
- * value stays a string (or a list of strings) except bare `null`.
+ * value stays a string (or a list of strings) except bare `null` and a bare
+ * empty value (`field=`), which are both null; `field=""` is the empty string.
  */
 
 import type { ActRefusal, ActStep, ActValue } from '@mnmal-ai/substrate-types';
@@ -26,6 +27,9 @@ const DEFINE_TYPE = /^([A-Za-z_][A-Za-z0-9_]*\/)?[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-
 /** A step reference: `#N`, `$name`, or a full id. */
 export const REF = /^(#\d+|\$[A-Za-z_][A-Za-z0-9_]*|[A-Za-z0-9_.:-]+)$/;
 const BINDING = /^\$([A-Za-z_][A-Za-z0-9_]*)$/;
+/** A word spelled as `define` names it, `Todo.unblock`, where a step's action belongs. */
+const DOTTED_ACTION =
+  /^((?:[A-Za-z_][A-Za-z0-9_]*\/)?[A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)$/;
 const NEEDS_QUOTES = /[\s;,"=#$\\[\]]/;
 
 const refuse = (step: number, token: string, problem: string): { refusal: ActRefusal } => ({
@@ -118,7 +122,7 @@ function argValue(elems: Elem[], raw: string): ActValue {
     return vs.length === 1 && vs[0] === '' ? [] : vs;
   }
   if (elems.length > 1) return elems.map((e) => e.v);
-  return !first.quoted && first.v === 'null' ? null : first.v;
+  return !first.quoted && (first.v === 'null' || first.v === '') ? null : first.v;
 }
 
 /** A bare reference, or a list of them written `#1,#2` or `[#1,#2]`; null when the token is anything else. */
@@ -139,7 +143,12 @@ function parseStep(text: string, n: number): ActStep | { refusal: ActRefusal } {
   const word = (t: Tok) => (t.elems[0] as Elem).v;
 
   if (!plain(head) || (word(head) !== '?' && !ACTION.test(word(head)))) {
-    return refuse(n, head.raw, 'bad action');
+    const dotted = plain(head) ? DOTTED_ACTION.exec(word(head)) : null;
+    if (dotted === null) return refuse(n, head.raw, 'bad action');
+    // `Todo.unblock #6`: the step is offered with the action first.
+    const r = refuse(n, head.raw, 'bad action: the action comes before the type');
+    r.refusal.nearest = [dotted[2], dotted[1], ...toks.slice(1).map((t) => t.raw)].join(' ');
+    return r;
   }
   if (word(head) === '?') {
     if (toks.length > 2) return refuse(n, (toks[2] as Tok).raw, 'help takes at most a type');
@@ -183,7 +192,14 @@ export function parseSketch(text: string): ParsedSketch {
   const steps: ActStep[] = [];
   for (const [i, s] of split.steps.entries()) {
     const step = parseStep(s, i + 1);
-    if ('refusal' in step) return step;
+    if ('refusal' in step) {
+      // A step's own nearest stands in for it among the sketch's other steps.
+      const fixed = step.refusal.nearest;
+      if (fixed !== null) {
+        step.refusal.nearest = split.steps.map((t, j) => (j === i ? fixed : t)).join('; ');
+      }
+      return step;
+    }
     steps.push(step);
   }
   return { steps, texts: split.steps };
