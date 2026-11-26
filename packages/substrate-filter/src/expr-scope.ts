@@ -3,7 +3,7 @@
  * declaration to an expression type, shared by the validator and both datasets.
  */
 import type { Expr, ExprType, FieldDef, WalkAgg } from '@mnmal-ai/substrate-types';
-import { METADATA_FILTER_FIELDS } from '@mnmal-ai/substrate-types';
+import { METADATA_FILTER_FIELDS, parseWalkRef } from '@mnmal-ai/substrate-types';
 import type { FieldDefOf } from './predicate.js';
 import type { TypeRef } from './walk-hops.js';
 
@@ -57,8 +57,8 @@ export function walkFarType(
   fieldDef: (ref: TypeRef, field: string) => FieldDef | undefined
 ): TypeRef | undefined {
   if (walk.in !== undefined) {
-    const m = /^([^/]+)\/([^./]+)\./.exec(walk.in);
-    return m?.[1] !== undefined && m[2] !== undefined ? { ns: m[1], type: m[2] } : undefined;
+    const ref = parseWalkRef(walk.in);
+    return ref === null ? undefined : { ns: ref.ns, type: ref.type };
   }
   const def = fieldDef(near, walk.out ?? '');
   return def?.kind === 'crossRef' ? { ns: def.ns, type: def.type } : undefined;

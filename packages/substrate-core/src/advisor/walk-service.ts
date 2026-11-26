@@ -19,6 +19,7 @@ import type {
   WalkAgg,
   WhereClause
 } from '@mnmal-ai/substrate-types';
+import { parseWalkRef } from '@mnmal-ai/substrate-types';
 import type { HopResolver } from '../walk-types.js';
 
 type Order = Array<[string, 'asc' | 'desc']>;
@@ -78,8 +79,8 @@ export function walkSites(
   forEachWalkHop(entry, seed, ({ kind, node, path, selection }, from) => {
     const far = resolve(node, from, path);
     const s: WalkSite = { path, node, far, wheres: [] };
-    // Validation proved `in` is '<ns>/<Type>.<field>' with no dot in the type.
-    if (typeof node.in === 'string') s.crossRef = node.in.slice(node.in.indexOf('.') + 1);
+    const ref = typeof node.in === 'string' ? parseWalkRef(node.in) : null;
+    if (ref !== null) s.crossRef = ref.field;
     out.push(s);
     const addWhere = (where: unknown, at: string[]) => {
       if (where !== undefined) s.wheres.push({ where, path: at });

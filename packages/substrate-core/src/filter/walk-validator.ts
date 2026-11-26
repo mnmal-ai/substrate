@@ -23,6 +23,7 @@ import {
   type ExprType,
   type FieldDef,
   type FieldKind,
+  parseWalkRef,
   type TypeSchema,
   type WalkNode
 } from '@mnmal-ai/substrate-types';
@@ -195,13 +196,12 @@ export function resolveHop(node: Record<string, unknown>, path: string[], scope:
   let fieldPath: string;
   let fieldOwner: Record<string, FieldDef>;
   if (dir === 'in') {
-    const m = /^([^/]+)\/([^./]+)\.(.+)$/.exec(spec);
-    if (m === null)
+    const parsed = parseWalkRef(spec);
+    if (parsed === null)
       fail('walk_unknown_ref', `'in' must be '<ns>/<Type>.<field>', got '${spec}'`, at);
-    const [, ns, type, field] = m as unknown as [string, string, string, string];
-    enter(ns);
-    inRef = { ns, type };
-    fieldPath = field;
+    enter(parsed.ns);
+    inRef = { ns: parsed.ns, type: parsed.type };
+    fieldPath = parsed.field;
     fieldOwner = farFields(inRef);
   } else {
     fieldPath = spec;
