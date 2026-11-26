@@ -84,6 +84,8 @@ export interface AdminInviteInput {
   readonly capabilities: readonly string[];
   /** Omitted: the server's default TTL. */
   readonly ttlMs?: number;
+  /** The kid the redeemed key gets. Omitted: the server picks a random one. */
+  readonly kid?: string;
 }
 
 export interface AdminInviteResult {
@@ -92,6 +94,8 @@ export interface AdminInviteResult {
   readonly expiresAt: string;
   readonly namespaces: string[];
   readonly capabilities: string[];
+  /** The kid the invite names, when it names one. */
+  readonly kid?: string;
 }
 
 export interface AdminApi extends SurgeryApi {
@@ -191,6 +195,7 @@ export function createAdminApi(t: HttpTransport): AdminApi {
         capabilities: [...input.capabilities]
       };
       if (input.ttlMs !== undefined) body.ttlMs = input.ttlMs;
+      if (input.kid !== undefined) body.kid = input.kid;
       const res = await t.raw('/substrate/v1/_system/invites', {
         method: 'POST',
         body,

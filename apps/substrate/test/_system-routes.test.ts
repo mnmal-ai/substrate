@@ -249,6 +249,88 @@ describe('POST /substrate/v1/_system/invites', () => {
   });
 });
 
+const NAMED = 'repo-claude@host-a';
+
+/** Seeds a Key row holding `kid`, live unless `revoked`. */
+async function seedKey(ctx: Ctx, kid: string, revoked = false): Promise<void> {
+  await ctx.substrateDataset.write(KEY_TYPE, [
+    {
+      kid,
+      name: kid,
+      algorithm: 'EdDSA',
+      publicKey: edPem().publicKeyPem,
+      namespaces: 'default',
+      capabilities: 'read',
+      revokedAt: revoked ? new Date() : null
+    }
+  ]);
+}
+
+describe('POST /substrate/v1/_system/invites — a named invite', () => {
+  let ctx: Ctx | null = null;
+  afterEach(async () => {
+    if (ctx !== null) {
+      await ctx.composed.stop();
+      ctx = null;
+    }
+  });
+  const grant = { namespaces: ['default'], capabilities: ['read'] };
+
+  it('kid given → 201 echoes it and the Invite row stores it', async () => {
+    ctx = await mkServer();
+    const res = await postAdmin(ctx, '/substrate/v1/_system/invites', { ...grant, kid: NAMED });
+    expect(res.status).toBe(201);
+    const body = jsonBody<{ code: string; kid?: string }>(res);
+    expect(body.kid).toBe(NAMED);
+    const row = (await ctx.substrateDataset.read(INVITE_TYPE, { id: body.code })).rows[0];
+    expect(row?.kid).toBe(NAMED);
+  });
+
+  it('kid omitted → row.kid is null and the response has no kid key', async () => {
+    ctx = await mkServer();
+    const res = await postAdmin(ctx, '/substrate/v1/_system/invites', grant);
+    expect(res.status).toBe(201);
+    const body = jsonBody<{ code: string }>(res);
+    expect('kid' in body).toBe(false);
+    const row = (await ctx.substrateDataset.read(INVITE_TYPE, { id: body.code })).rows[0];
+    expect(row?.kid ?? null).toBeNull();
+  });
+
+  it.each([
+    '',
+    'a'.repeat(129),
+    'x\ny',
+    'x\u001b[0m',
+    "o'brien@host",
+    'has space@host',
+    'two@at@signs',
+    '@host',
+    42
+  ])('kid %j → 400 invalid_kid, no row written', async (kid) => {
+    ctx = await mkServer();
+    const res = await postAdmin(ctx, '/substrate/v1/_system/invites', { ...grant, kid });
+    expect(res.status).toBe(400);
+    expect(jsonBody<{ code: string }>(res).code).toBe('invalid_kid');
+    expect((await ctx.substrateDataset.read(INVITE_TYPE, {})).rows).toHaveLength(0);
+  });
+
+  it('kid held by a live key → 409 kid_already_live, no row written', async () => {
+    ctx = await mkServer();
+    await seedKey(ctx, NAMED);
+    const res = await postAdmin(ctx, '/substrate/v1/_system/invites', { ...grant, kid: NAMED });
+    expect(res.status).toBe(409);
+    expect(jsonBody<{ code: string }>(res).code).toBe('kid_already_live');
+    expect((await ctx.substrateDataset.read(INVITE_TYPE, {})).rows).toHaveLength(0);
+  });
+
+  it('kid held only by a revoked key → 201', async () => {
+    ctx = await mkServer();
+    await seedKey(ctx, NAMED, true);
+    const res = await postAdmin(ctx, '/substrate/v1/_system/invites', { ...grant, kid: NAMED });
+    expect(res.status).toBe(201);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // POST /substrate/v1/_system/register
 // ---------------------------------------------------------------------------
@@ -260,6 +342,7 @@ async function mintInvite(
     capabilities: Array<string>;
     ttlMs?: number;
     allowUnknownNs?: boolean;
+    kid?: string;
   } = {
     namespaces: ['default'],
     capabilities: ['read']

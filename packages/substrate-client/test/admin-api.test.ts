@@ -327,6 +327,36 @@ describe('client.admin.register / invite', () => {
     });
     expect(out.code).toBe('inv_secret');
   });
+
+  it('invite sends a kid when given one, and returns the kid the server echoes', async () => {
+    let body: unknown;
+    mockHandlers(
+      http.post(`${E}/substrate/v1/_system/invites`, async ({ request }) => {
+        body = await request.json();
+        return HttpResponse.json(
+          {
+            code: 'inv_secret',
+            expiresAt: '2026-10-07T00:00:00.000Z',
+            namespaces: ['cortext'],
+            capabilities: ['read'],
+            kid: 'repo-claude@host-a'
+          },
+          { status: 201 }
+        );
+      })
+    );
+    const out = await new SubstrateClient({ endpoint: E, token: 't' }).admin.invite({
+      namespaces: ['cortext'],
+      capabilities: ['read'],
+      kid: 'repo-claude@host-a'
+    });
+    expect(body).toEqual({
+      namespaces: ['cortext'],
+      capabilities: ['read'],
+      kid: 'repo-claude@host-a'
+    });
+    expect(out.kid).toBe('repo-claude@host-a');
+  });
 });
 
 describe('refusal bodies', () => {
