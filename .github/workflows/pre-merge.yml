@@ -5,7 +5,11 @@ name: Pre-merge
 # Todo #1859). The label starts a run, and every later push re-runs it.
 #
 # The suites run once per commit. Each run picks a mode in pg-plan:
-#   run     - run the suites (a push, the ready-to-merge label, or no other run to follow)
+#   run     - run the suites (a push, the ready-to-merge label, or no other run to follow).
+#             Only the passes of packages the PR's changes reach run: a package with a changed
+#             file and every package that depends on it. A changed file outside every package
+#             (the lockfile, a workflow, root config) runs them all. When no pass is reached,
+#             none runs and the gate says so.
 #   follow  - another label added to a ready PR: wait for the run on this commit that is
 #             running the suites, and report its gate result rather than repeating it
 #   release - the PR changes only package.json "version" lines and CHANGELOG.md
@@ -47,7 +51,9 @@ jobs:
     outputs:
       mode: ${{ steps.mode.outputs.mode }}
       follow: ${{ steps.mode.outputs.follow }}
+      only: ${{ steps.mode.outputs.only }}
       matrix: ${{ steps.plan.outputs.matrix }}
+      passes: ${{ steps.plan.outputs.passes }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
@@ -66,7 +72,13 @@ jobs:
       - name: Plan the passes
         id: plan
         if: steps.mode.outputs.mode == 'run'
-        run: echo "matrix=$(.github/scripts/test-pg-gated.sh plan)" >> "$GITHUB_OUTPUT"
+        env:
+          PG_ONLY: ${{ steps.mode.outputs.only }}
+        run: |
+          matrix=$(.github/scripts/test-pg-gated.sh plan)
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "passes=$(node -e 'console.log(JSON.parse(process.argv[1]).include.length)' "$matrix")" >> "$GITHUB_OUTPUT"
+          echo "packages reached: ${PG_ONLY:-none}"
 
   # As ci.yml's pg-pass: the role is least-privilege because the test guards
   # refuse a superuser, and the credentials are literals scoped to this
@@ -74,7 +86,7 @@ jobs:
   pg-pass:
     name: pg ${{ matrix.name }}
     needs: pg-plan
-    if: needs.pg-plan.outputs.mode == 'run'
+    if: needs.pg-plan.outputs.mode == 'run' && needs.pg-plan.outputs.passes != '0'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -174,25 +186,30 @@ jobs:
           FOLLOW: ${{ needs.pg-plan.outputs.follow }}
         run: node .github/scripts/pre-merge-mode.mjs follow
 
+      - name: No Postgres pass covers the change
+        if: needs.pg-plan.outputs.mode == 'run' && needs.pg-plan.outputs.passes == '0'
+        run: echo "no package with a Postgres suite depends on what this PR changes"
+
       - name: Every pass succeeded
-        if: needs.pg-plan.outputs.mode == 'run' && needs.pg-pass.result != 'success'
+        if: needs.pg-plan.outputs.mode == 'run' && needs.pg-plan.outputs.passes != '0' && needs.pg-pass.result != 'success'
         run: |
           echo "::error::a pre-merge pg pass did not succeed (passes: ${{ needs.pg-pass.result }})"
           exit 1
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
-        if: needs.pg-plan.outputs.mode == 'run'
+        if: needs.pg-plan.outputs.mode == 'run' && needs.pg-plan.outputs.passes != '0'
         with:
           pattern: pg-report-*
           path: ${{ runner.temp }}/pg-reports
           merge-multiple: true
 
       - uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d  # v5.2.4
-        if: needs.pg-plan.outputs.mode == 'run'
+        if: needs.pg-plan.outputs.mode == 'run' && needs.pg-plan.outputs.passes != '0'
 
       # Covers the golden evals: their pg cases skip without POSTGRES_URL like any other.
       - name: Every pg-gated test ran, none skipped
-        if: needs.pg-plan.outputs.mode == 'run'
+        if: needs.pg-plan.outputs.mode == 'run' && needs.pg-plan.outputs.passes != '0'
         env:
           PG_REPORTS: ${{ runner.temp }}/pg-reports
+          PG_ONLY: ${{ needs.pg-plan.outputs.only }}
         run: .github/scripts/test-pg-gated.sh check

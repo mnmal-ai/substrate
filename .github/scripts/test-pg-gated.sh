@@ -11,6 +11,10 @@
 #
 # A package's pass covers all its files, except those a part takes. A part is a
 # group of slow files with a pass of its own, so CI runs it beside the rest.
+#
+# PG_ONLY narrows plan and check to the passes of the listed package dirs
+# (space-separated; unset or `*` means all). The pre-merge workflow sets it to
+# the packages a PR's changes reach.
 set -euo pipefail
 
 out="${PG_REPORTS:-${RUNNER_TEMP:-$(mktemp -d)}}"
@@ -35,9 +39,17 @@ prefixes() {
 }
 
 # Every pass, one per line: "<dir>" or "<dir> <part>".
-passes() {
+all_passes() {
   dirs
   parts | cut -d' ' -f1-2
+}
+
+# The passes PG_ONLY keeps.
+passes() {
+  local only=${PG_ONLY-*}
+  if [ "$only" = '*' ]; then all_passes; return; fi
+  all_passes | awk -v only="$only" \
+    'BEGIN { n = split(only, a, " "); for (i = 1; i <= n; i++) keep[a[i]] = 1 } keep[$1]'
 }
 
 report() { echo "$out/pg-${1//\//-}${2:+-$2}.json"; }
@@ -65,7 +77,8 @@ run() {
 check() {
   local -a ds
   mapfile -t ds < <(passes)
-  [ "${#ds[@]}" -gt 0 ] || { echo "::error::no pg-gated packages found"; exit 1; }
+  [ "$(all_passes | wc -l)" -gt 0 ] || { echo "::error::no pg-gated packages found"; exit 1; }
+  [ "${#ds[@]}" -gt 0 ] || { echo "no Postgres pass covers the changed packages"; return 0; }
   node - "$out" "${ds[@]}" <<'JS'
 const [out, ...dirs] = process.argv.slice(2);
 // Gated on env vars other than POSTGRES_URL (a hive topology, a holomap
@@ -104,7 +117,7 @@ JS
 case "${1:-all}" in
   plan)
     passes | node -e '
-      const lines = require("node:fs").readFileSync(0, "utf8").trim().split("\n");
+      const lines = require("node:fs").readFileSync(0, "utf8").split("\n").filter(Boolean);
       const include = lines.map((name) => {
         const [dir, part = ""] = name.split(" ");
         return { name, dir, part };
