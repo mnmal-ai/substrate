@@ -34,6 +34,7 @@ import type {
 import {
   grantRefusal,
   grantRefusalCode,
+  parseWalkRef,
   ROW_POLICY_BLOCKS_WALK,
   seesNamespace,
   WALK_UNSUPPORTED_REF,
@@ -71,8 +72,8 @@ function hopFarType(
   fieldsOf: (ref: TypeRef) => Record<string, FieldDef> | undefined
 ): TypeRef | undefined {
   if (typeof node.in === 'string' && node.out === undefined) {
-    const m = /^([^/]+)\/([^./]+)\.[^.]+$/.exec(node.in);
-    return m?.[1] !== undefined && m[2] !== undefined ? { ns: m[1], type: m[2] } : undefined;
+    const ref = parseWalkRef(node.in);
+    return ref === null || ref.field.includes('.') ? undefined : { ns: ref.ns, type: ref.type };
   }
   if (typeof node.out !== 'string' || node.in !== undefined) return undefined;
   const fields = fieldsOf(near);

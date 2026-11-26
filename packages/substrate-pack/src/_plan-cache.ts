@@ -7,6 +7,7 @@
  */
 
 import type { FieldDef, FieldInput, Schema } from '@mnmal-ai/substrate-types';
+import { parseWalkRef } from '@mnmal-ai/substrate-types';
 
 /**
  * Per-row decode/encode plan. One entry per selected field: name, the
@@ -48,8 +49,8 @@ function walkSlot(
   // The far type is `in`'s `<ns>/<Type>`, or the `out` crossRef's target.
   let far: { ns: string; type: string } | undefined;
   if (typeof walk.in === 'string') {
-    const m = /^([^/]+)\/([^./]+)\./.exec(walk.in);
-    if (m !== null) far = { ns: m[1] as string, type: m[2] as string };
+    const ref = parseWalkRef(walk.in);
+    if (ref !== null) far = { ns: ref.ns, type: ref.type };
   } else if (typeof walk.out === 'string') {
     const def = Object.hasOwn(fieldMap, walk.out) ? fieldMap[walk.out] : undefined;
     if (def?.kind === 'crossRef') far = { ns: def.ns, type: def.type };

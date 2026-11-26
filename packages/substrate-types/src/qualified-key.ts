@@ -24,3 +24,24 @@ export function parseQualifiedKey(key: string): ParsedKey | null {
 export function formatQualifiedKey(namespace: string, name: string): string {
   return `${namespace}/${name}`;
 }
+
+/** The parts of a walk `in` reference, `<namespace>/<Type>.<field>`. */
+export interface ParsedWalkRef {
+  ns: string;
+  type: string;
+  /** Everything after the first dot that follows the type. */
+  field: string;
+}
+
+const WALK_REF = /^([^/]+)\/([^./]+)\.(.+)$/;
+
+/**
+ * Parser for a walk `in` reference (`<namespace>/<Type>.<field>`). Returns
+ * `null` when the namespace, the type or the field is missing.
+ */
+export function parseWalkRef(ref: string): ParsedWalkRef | null {
+  const m = WALK_REF.exec(ref);
+  if (m === null) return null;
+  const [, ns, type, field] = m as unknown as [string, string, string, string];
+  return { ns, type, field };
+}

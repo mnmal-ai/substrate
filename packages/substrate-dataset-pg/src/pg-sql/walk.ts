@@ -30,6 +30,7 @@ import {
 } from '@mnmal-ai/substrate-filter';
 import {
   type FieldDef,
+  parseWalkRef,
   type RefOperand,
   UnsupportedFilterError,
   type WalkNode,
@@ -145,8 +146,8 @@ export function farTypeOf(
   fieldDef: (type: TypeRef, field: string) => FieldDef | undefined
 ): TypeRef | undefined {
   if (node.in !== undefined) {
-    const m = /^([^/]+)\/([^./]+)\./.exec(node.in);
-    return m?.[1] === undefined || m[2] === undefined ? undefined : { ns: m[1], type: m[2] };
+    const ref = parseWalkRef(node.in);
+    return ref === null ? undefined : { ns: ref.ns, type: ref.type };
   }
   const def = fieldDef(near, node.out ?? '');
   return def?.kind === 'crossRef' ? { ns: def.ns, type: def.type } : undefined;
@@ -200,11 +201,11 @@ export function hop(
   let via: string | undefined;
   let join: Fragment;
   if (node.in !== undefined) {
-    const m = /^([^/]+)\/([^./]+)\.(.+)$/.exec(node.in);
-    if (m === null)
+    const parsed = parseWalkRef(node.in);
+    if (parsed === null)
       throw new Error(`internal: walk 'in' '${node.in}' is not '<ns>/<Type>.<field>'`);
-    const [, farNs, farType, field] = m as unknown as [string, string, string, string];
-    type = { ns: farNs, type: farType };
+    const { field } = parsed;
+    type = { ns: parsed.ns, type: parsed.type };
     via = field;
     // Verbatim the eager crossRef index's key, so the index serves the hop. A
     // crossRef column has `id`'s collation, so it joins bare.
