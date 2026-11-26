@@ -1,9 +1,9 @@
-import { AUDIT_EVENT_TYPE, INVITE_TYPE } from '@mnmal-ai/substrate-compose';
+import { AUDIT_EVENT_TYPE, INVITE_TYPE, KEY_TYPE } from '@mnmal-ai/substrate-compose';
 import { MemoryDataset } from '@mnmal-ai/substrate-dataset-memory';
 import { describe, expect, it } from 'vitest';
 import type { OpenDatasetFn, OpenedDataset } from '../src/admin/dataset.js';
 import { MAX_TTL_MS, parseDuration } from '../src/cli/federate/duration.js';
-import { runEnroll } from '../src/cli/federate/enroll.js';
+import { formatEnrollOutput, runEnroll } from '../src/cli/federate/enroll.js';
 import { parseEnrollArgs } from '../src/cli/federate/main.js';
 import type { AuthPosture } from '../src/cli/federate/probe.js';
 import { decodeJoinToken } from '../src/cli/federate/token.js';
@@ -237,5 +237,74 @@ describe('runEnroll', () => {
     expect(expiry).toBeLessThanOrEqual(Date.now() + 900_000);
     expect(result.namespaces).toEqual(['demo', 'logs']);
     expect(result.capabilities).toEqual(['read', 'mutate']);
+  });
+});
+
+describe('enroll --kid', () => {
+  const base = ['enroll', '--origin', 'https://b.internal:3100', '--ns', 'demo'];
+  const args = (kid?: string) => ({
+    origin: 'https://b.internal:3100',
+    namespaces: ['demo'],
+    capabilities: ['read'],
+    ttlMs: 900_000,
+    ...(kid !== undefined ? { kid } : {})
+  });
+
+  it('parses --kid, and leaves it unset without the flag', () => {
+    expect(parseEnrollArgs([...base, '--kid', 'repo-claude@host-a']).kid).toBe(
+      'repo-claude@host-a'
+    );
+    expect(parseEnrollArgs(base).kid).toBeUndefined();
+  });
+
+  it('rejects --kid twice, without a value, or malformed', () => {
+    expect(() => parseEnrollArgs([...base, '--kid', 'a@b', '--kid', 'c@d'])).toThrow(
+      /--kid specified more than once/
+    );
+    expect(() => parseEnrollArgs([...base, '--kid'])).toThrow(/--kid requires a value/);
+    for (const bad of ["o'brien@host", 'two@at@signs', 'has space', '@host']) {
+      expect(() => parseEnrollArgs([...base, '--kid', bad]), bad).toThrow(/enroll: --kid/);
+    }
+  });
+
+  it('stores the kid on the invite and in the audit row, and prints it', async () => {
+    const dataset = new MemoryDataset({ namespace: '_system' });
+    const result = await runEnroll(
+      args('repo-claude@host-a'),
+      ENV,
+      makeOpener(dataset),
+      posture('enabled')
+    );
+    expect((await dataset.read(INVITE_TYPE, {})).rows[0]?.kid).toBe('repo-claude@host-a');
+    const audit = (await dataset.read(AUDIT_EVENT_TYPE, {})).rows[0];
+    expect(JSON.stringify(audit?.details)).toContain('repo-claude@host-a');
+    expect(formatEnrollOutput(result)).toContain('  kid:          repo-claude@host-a');
+  });
+
+  it('prints no kid line and stores null for an unnamed invite', async () => {
+    const dataset = new MemoryDataset({ namespace: '_system' });
+    const result = await runEnroll(args(), ENV, makeOpener(dataset), posture('enabled'));
+    expect((await dataset.read(INVITE_TYPE, {})).rows[0]?.kid ?? null).toBeNull();
+    expect(formatEnrollOutput(result)).not.toContain('kid:');
+  });
+
+  it('refuses a kid a live key holds, and writes nothing', async () => {
+    const dataset = new MemoryDataset({ namespace: '_system' });
+    await dataset.write(KEY_TYPE, [
+      {
+        kid: 'repo-claude@host-a',
+        name: 'x',
+        algorithm: 'EdDSA',
+        publicKey: 'pem',
+        namespaces: 'demo',
+        capabilities: 'read',
+        revokedAt: null
+      }
+    ]);
+    await expect(
+      runEnroll(args('repo-claude@host-a'), ENV, makeOpener(dataset), posture('enabled'))
+    ).rejects.toThrow(/kid_already_live/);
+    expect((await dataset.read(INVITE_TYPE, {})).rows).toHaveLength(0);
+    expect((await dataset.read(AUDIT_EVENT_TYPE, {})).rows).toHaveLength(0);
   });
 });
