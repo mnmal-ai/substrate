@@ -10,6 +10,7 @@
 
 import {
   type AggFn,
+  parseWalkRef,
   type RefOperand,
   ResolverFrameError,
   type Row,
@@ -132,11 +133,11 @@ function hopRows(
   walk: WalkContext
 ): { type: TypeRef; rows: Row[] } {
   if (node.in !== undefined) {
-    const m = /^([^/]+)\/([^./]+)\.(.+)$/.exec(node.in);
-    if (m === null)
+    const parsed = parseWalkRef(node.in);
+    if (parsed === null)
       throw new Error(`internal: walk 'in' '${node.in}' is not '<ns>/<Type>.<field>'`);
-    const [, ns, type, field] = m as unknown as [string, string, string, string];
-    const ref = { ns, type };
+    const { field } = parsed;
+    const ref = { ns: parsed.ns, type: parsed.type };
     return {
       type: ref,
       rows: typeof row.id === 'string' ? walk.neighbours(ref, field, row.id) : []
