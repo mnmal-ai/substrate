@@ -1,6 +1,7 @@
 /** The admin-gated routes, typed. Each call needs an identity whose grant confers `admin`. */
 
 import type { HttpTransport } from '../transport/http.js';
+import { encodeJoinToken } from './join-token.js';
 import { createSurgeryApi, type SurgeryApi } from './surgery.js';
 
 export interface AdminKeyRow {
@@ -96,6 +97,8 @@ export interface AdminInviteResult {
   readonly capabilities: string[];
   /** The kid the invite names, when it names one. */
   readonly kid?: string;
+  /** The code as a join token for this client's origin: what `substrate federate join` takes. As secret as the code. */
+  readonly token: string;
 }
 
 export interface AdminApi extends SurgeryApi {
@@ -201,7 +204,11 @@ export function createAdminApi(t: HttpTransport): AdminApi {
         body,
         ...(opts.signal !== undefined ? { signal: opts.signal } : {})
       });
-      return (await res.json()) as AdminInviteResult;
+      const out = (await res.json()) as Omit<AdminInviteResult, 'token'>;
+      return {
+        ...out,
+        token: encodeJoinToken({ origin: new URL(t.endpoint).origin, code: out.code })
+      };
     }
   };
 }

@@ -23,6 +23,7 @@ const tick = (ms = 40) => new Promise((r) => setTimeout(r, ms));
 const ENTER = '\r';
 const ESC = '\u001B';
 const DOWN = '\u001B[B';
+const BACKSPACE = '\u007F';
 const RIGHT = '\u001B[C';
 const row = (kid: string, namespaces: string, capabilities = 'read,mutate'): AdminKeyRow => ({
   id: kid,
@@ -92,7 +93,12 @@ function unlockedApp(
           invite: async (c: unknown) => {
             calls.push(['invite', c]);
             if (over.fail) throw over.fail;
-            return { code: over.code ?? 'inv_SECRET', expiresAt: '2026-10-13T00:00:00.000Z' };
+            // `over.code` is what the panel shows: the join token. The bare code is never shown.
+            return {
+              code: 'RAWCODE',
+              token: over.code ?? 'inv_SECRET',
+              expiresAt: '2026-10-13T00:00:00.000Z'
+            };
           }
         },
         close: async () => {}
@@ -242,6 +248,8 @@ describe('readInviteTtl', () => {
     await type(app, 'i');
     await tick(60);
     await type(app, DOWN, ' ', ENTER);
+    await tick(20);
+    await type(app, ENTER); // random kid
     await tick(20);
     await type(app, ...'31d', ENTER);
     await tick(20);
@@ -539,12 +547,47 @@ describe('review and apply', () => {
     app.unmount();
   });
 
+  it('a named invite asks for the key name, refuses a malformed one, and mints for that kid', async () => {
+    const app = unlockedApp({ code: 'substrate-join-v1.TOKEN' });
+    await openKeys(app);
+    await type(app, 'i');
+    await tick(60);
+    await type(app, DOWN, ' ', ENTER);
+    await tick(20);
+    expect(app.frame()).toContain('key name (e.g. repo-claude@host-a; enter for a random one)');
+    await type(app, ...'bad name', ENTER);
+    await tick(20);
+    expect(app.frame()).toContain("name or name@host, of letters, digits, '.', '_' and '-'");
+    expect(app.calls).toEqual([]);
+    for (let i = 0; i < 'bad name'.length; i++) await type(app, BACKSPACE);
+    await type(app, ...'repo-claude@host-a', ENTER);
+    await tick(20);
+    await type(app, ENTER); // default ttl
+    await tick(20);
+    expect(app.frame()).toContain('invite for repo-claude@host-a · journal:r');
+    await type(app, 'y', ENTER);
+    await tick(60);
+    expect(app.calls).toEqual([
+      ['invite', { namespaces: ['journal'], capabilities: ['read'], kid: 'repo-claude@host-a' }]
+    ]);
+    expect(app.frame()).toContain('substrate-join-v1.TOKEN');
+    await type(app, ESC);
+    await tick(20);
+    expect(app.frame()).not.toContain('substrate-join-v1.TOKEN');
+    expect(app.frame()).not.toContain('RAWCODE');
+    // The line is wider than the test terminal, so only its head is on one row.
+    expect(app.frame()).toContain('✓ invite minted for repo-claude@host-a journal:r, expires');
+    app.unmount();
+  });
+
   it('an invite shows its code in the panel only, never in the transcript', async () => {
     const app = unlockedApp();
     await openKeys(app);
     await type(app, 'i');
     await tick(60);
     await type(app, DOWN, ' ', ENTER); // journal read (_system sorts first)
+    await tick(20);
+    await type(app, ENTER); // random kid
     await tick(20);
     await type(app, ...'7d', ENTER); // ttl
     await tick(20);
@@ -554,6 +597,8 @@ describe('review and apply', () => {
       ['invite', { namespaces: ['journal'], capabilities: ['read'], ttlMs: 604_800_000 }]
     ]);
     expect(app.frame()).toContain('inv_SECRET');
+    expect(app.frame()).not.toContain('RAWCODE');
+    expect(app.frame()).toContain('paste into substrate federate join');
     await type(app, ESC);
     await tick(20);
     expect(app.frame()).not.toContain('inv_SECRET');
@@ -762,6 +807,8 @@ describe('review gestures and size', () => {
     await tick(60);
     await type(app, DOWN, ' ', ENTER);
     await tick(20);
+    await type(app, ENTER); // random kid
+    await tick(20);
     await type(app, ENTER); // default ttl
     await tick(20);
     expect(app.frame().split('\n').length).toBeLessThanOrEqual(24);
@@ -948,6 +995,8 @@ describe('1603 minors', () => {
     await type(app, 'i');
     await tick(60);
     await type(app, DOWN, ' ', ENTER);
+    await tick(20);
+    await type(app, ENTER);
     await tick(20);
     await type(app, ENTER);
     await tick(20);

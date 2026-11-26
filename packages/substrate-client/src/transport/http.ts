@@ -41,6 +41,11 @@ export class HttpTransport {
     this.#getToken = opts.getToken;
   }
 
+  /** The base URL every call goes to, without a trailing slash. */
+  get endpoint(): string {
+    return this.#endpoint;
+  }
+
   async query(frame: QualifiedFrame, opts: HttpCallOpts): Promise<PackEnvelope> {
     return this.#postEnvelope(`${this.#endpoint}/substrate/v1/query`, frame, opts);
   }
