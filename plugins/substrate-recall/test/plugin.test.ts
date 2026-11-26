@@ -31,7 +31,8 @@ describe('createRecallPlugin', () => {
       '0001_embeddings',
       '0002_recall_clusters',
       '0003_lexical',
-      '0004_embeddings_nullable_vector'
+      '0004_embeddings_nullable_vector',
+      '0005_row_id_collation'
     ]);
     expect(Object.keys(plugin.filterOperators ?? {})).toContain('embeddingSimilar');
     expect(plugin.kernelRoutes).toEqual(

@@ -85,7 +85,7 @@ describe('walk _agg picks compile to an index-order top-1', () => {
   it('on an index the other way: non-null keys nulls first (its backward scan), then the null tail', () => {
     const text = project({ lp: latestAt }, scope({ at: 'asc' }));
     expect(text).toContain(`${AT} IS NOT NULL) ORDER BY ${AT} DESC NULLS FIRST, ${BY_ID}`);
-    expect(text).toContain(`${AT} IS NULL ORDER BY ${BY_ID}) LIMIT 1`);
+    expect(text).toContain(`${AT} IS NULL ORDER BY (w1.id || '') ASC LIMIT 1) LIMIT 1`);
     expect(text).not.toMatch(/\bmax\(/);
   });
 

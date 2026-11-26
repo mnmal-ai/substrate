@@ -160,7 +160,8 @@ describe.skipIf(!POSTGRES_URL)('tables layout', () => {
         '0006t_int32_field_kind',
         '0007t_int16_field_kind',
         '0008t_short_ids_row_fk',
-        '0009t_act_results'
+        '0009t_act_results',
+        '0010t_id_collation'
       ]);
       const [present] = await s<Array<Record<string, boolean>>>`
         SELECT to_regclass('rows') IS NOT NULL AS rows,
@@ -232,7 +233,8 @@ describe.skipIf(!POSTGRES_URL)('tables layout', () => {
         '0006t_int32_field_kind',
         '0007t_int16_field_kind',
         '0008t_short_ids_row_fk',
-        '0009t_act_results'
+        '0009t_act_results',
+        '0010t_id_collation'
       ]);
       await expectUuidChecks(s);
     });
@@ -255,7 +257,8 @@ describe.skipIf(!POSTGRES_URL)('tables layout', () => {
         '0006t_int32_field_kind',
         '0007t_int16_field_kind',
         '0008t_short_ids_row_fk',
-        '0009t_act_results'
+        '0009t_act_results',
+        '0010t_id_collation'
       ]);
 
       await runMigrations(s, { enforceUuidCheck: true });
@@ -268,7 +271,8 @@ describe.skipIf(!POSTGRES_URL)('tables layout', () => {
         '0006t_int32_field_kind',
         '0007t_int16_field_kind',
         '0008t_short_ids_row_fk',
-        '0009t_act_results'
+        '0009t_act_results',
+        '0010t_id_collation'
       ]);
       await expectUuidChecks(s);
       const [before] = await s<Array<{ table_name: string }>>`
@@ -320,7 +324,7 @@ describe.skipIf(!POSTGRES_URL)('tables layout', () => {
     expect(cols[columnName('status')]).toEqual(text);
     // A crossRef column has `id`'s collation, so a walk joins the two bare.
     expect(cols[columnName('ref')]).toEqual(cols.id);
-    expect(cols.id?.collation).not.toBe('C');
+    expect(cols.id?.collation).toBe('C');
     expect(cols[columnName('price')]).toEqual({ type: 'double precision', collation: null });
     expect(cols[columnName('observedAt')]).toEqual({
       type: 'timestamp with time zone',

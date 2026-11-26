@@ -2,6 +2,7 @@ import postgres from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { embeddingsMigration } from '../src/migrations/0001_embeddings.js';
 import { embeddingsNullableVectorMigration } from '../src/migrations/0004_embeddings_nullable_vector.js';
+import { rowIdCollationMigration } from '../src/migrations/0005_row_id_collation.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 const isPgGated = POSTGRES_URL !== undefined;
@@ -156,5 +157,43 @@ describe.skipIf(!isPgGated)('embeddingsNullableVectorMigration', () => {
     await embeddingsNullableVectorMigration().rollback?.(ctx());
     expect(await nullable()).toBe(false);
     expect(await sql`SELECT 1 FROM embeddings WHERE row_id = 'marked'`).toHaveLength(0);
+  });
+});
+
+describe.skipIf(!isPgGated)('rowIdCollationMigration', () => {
+  let sql: ReturnType<typeof postgres>;
+  const ctx = () => ({ sql, metric: () => {}, layout: null });
+  const collation = async (): Promise<string | undefined> => {
+    const rows = await sql<Array<{ coll: string }>>`
+      SELECT attcollation::regcollation::text AS coll FROM pg_attribute
+      WHERE attrelid = 'embeddings'::regclass AND attname = 'row_id'
+    `;
+    return rows[0]?.coll;
+  };
+
+  beforeAll(async () => {
+    sql = postgres(POSTGRES_URL as string, { onnotice: () => {} });
+  });
+
+  afterAll(async () => {
+    await sql`DROP TABLE IF EXISTS embeddings CASCADE`;
+    await sql.end();
+  });
+
+  it('moves row_id to "C", applies cleanly twice, and rolls back', async () => {
+    await sql`DROP TABLE IF EXISTS embeddings CASCADE`;
+    await embeddingsMigration().apply(ctx());
+    expect(await collation()).toBe('"default"');
+    await rowIdCollationMigration().apply(ctx());
+    await rowIdCollationMigration().apply(ctx());
+    expect(await collation()).toBe('"C"');
+    await rowIdCollationMigration().rollback?.(ctx());
+    expect(await collation()).toBe('"default"');
+  });
+
+  it('is a no-op when the tables do not exist', async () => {
+    await sql`DROP TABLE IF EXISTS embeddings CASCADE`;
+    await rowIdCollationMigration().apply(ctx());
+    expect(await tableExists(sql)).toBe(false);
   });
 });

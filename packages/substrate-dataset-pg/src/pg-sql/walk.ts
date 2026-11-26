@@ -222,7 +222,7 @@ export function hop(
       throw new Error(`internal: walk 'out' '${field}' is not a crossRef on '${scope.type.type}'`);
     }
     type = { ns: def.ns, type: def.type };
-    // Uncollated, as `id` is, so the far id's index serves it; a crossRef column joins bare.
+    // Bare, so the far id's index serves it: a crossRef column has `id`'s collation.
     const farId = `${qualifier(alias)}id${near.column(field) === undefined ? '::text' : ''}`;
     join = sql`${sql.unsafe(farId)} = ${fieldExpr(sql, near, field, 'rawText', scope.alias)}`;
   }
@@ -448,7 +448,7 @@ export function prepareSharedPicks(
       key,
       dir === 'min' ? 'ASC' : 'DESC'
     );
-    // Uncollated, so the hub row's id index serves the join below.
+    // Bare, so the hub row's id index serves the join below.
     const hubOf = fieldExpr(sql, table, hub.out as string, 'rawText', scope.seedAlias);
     const hubs = sql`SELECT DISTINCT ${hubOf} AS id FROM ${sql.unsafe(table.from)} ${sql.unsafe(scope.seedAlias)} WHERE ${filter}`;
     const own = groupConjuncts(pick.where).items.filter((i) => !whereUsesWalks(i));
@@ -580,7 +580,9 @@ export function firstRow(
   const a = sql.unsafe(alias);
   const t = sql.unsafe(from);
   const best = sql.unsafe(dir === 'ASC' ? 'min' : 'max');
-  const byId = sql.unsafe(`ORDER BY ${alias}.id COLLATE "C" ASC LIMIT 1`);
+  // `|| ''` keeps the primary key from serving this order: walking it to the first row
+  // that passes `where` reads the table when the hub's rows are few.
+  const byId = sql.unsafe(`ORDER BY (${alias}.id || '') ASC LIMIT 1`);
   const keyed = sql`SELECT ${select} FROM ${t} ${a} WHERE ${where} AND ${key} = (SELECT ${best}(${key}) FROM ${t} ${a} WHERE ${where}) ${byId}`;
   if (!nullable) return keyed;
   // Invariant: the null branch answers only when the keyed one is empty, because a

@@ -232,8 +232,9 @@ function pickRow(
   const keyed = sql`SELECT ${select} FROM ${t} ${a} WHERE ${rows} ORDER BY ${p.key} ${nulls}, ${byId}`;
   if (!backward || p.filter !== undefined) return sql`(${keyed})`;
   // As firstRow's: a correlated, non-parallel Append runs in order under LIMIT 1,
-  // so the null branch answers only when the keyed one is empty.
-  return sql`((${keyed}) UNION ALL (SELECT ${select} FROM ${t} ${a} WHERE ${where} AND ${p.key} IS NULL ORDER BY ${byId}) LIMIT 1)`;
+  // so the null branch answers only when the keyed one is empty. Its order is by
+  // `id || ''`, as firstRow's, so the primary key does not serve it.
+  return sql`((${keyed}) UNION ALL (SELECT ${select} FROM ${t} ${a} WHERE ${where} AND ${p.key} IS NULL ORDER BY (${a}.id || '') ASC LIMIT 1) LIMIT 1)`;
 }
 
 /**

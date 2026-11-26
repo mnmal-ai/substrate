@@ -82,7 +82,8 @@ describe.skipIf(!POSTGRES_URL)('storage layout', () => {
       '0006t_int32_field_kind',
       '0007t_int16_field_kind',
       '0008t_short_ids_row_fk',
-      '0009t_act_results'
+      '0009t_act_results',
+      '0010t_id_collation'
     ]);
   });
 
