@@ -11,11 +11,13 @@ import type { NlJudgeAction, NlJudgeChoice, NlJudgeStep } from '@mnmal-ai/substr
 import { own } from '../own.js';
 import type { NamespaceRulings, ValueAlias } from '../pack/rulings.js';
 import type { NamespacePack } from '../pack/types.js';
+import { splitWords } from '../pack/words.js';
 import {
   type Candidate,
   type ParseContext,
   type ParseResult,
-  parseQuestion
+  parseQuestion,
+  shapesAnswer
 } from '../parse/parse.js';
 
 export type JudgeAction = NlJudgeAction;
@@ -185,6 +187,30 @@ function withBinding(rulings: NamespaceRulings | undefined, choice: JudgeChoice)
   };
 }
 
+/** Verbs that say only that something took place, so they choose no date field. */
+const OCCURRED = new Set(['happen', 'happened', 'happening', 'occurred']);
+
+/**
+ * Why a leftover word of a picked reading cannot be noise, or null. An aggregate
+ * or unit word asks for a different answer, a word of one of the type's fields
+ * names a filter or a column, and a word right before the time expression says
+ * which date the window is on ("due in 2026"), unless it is one of OCCURRED.
+ */
+function notNoise(word: string, question: string, chosen: Candidate, pack: NamespacePack) {
+  const parts = word.split(' ');
+  if (parts.some(shapesAnswer)) return 'asks for an aggregate or a grouping';
+  const fields = Object.values(own(pack.types, chosen.type)?.fields ?? {});
+  const fieldWords = new Set(
+    fields.flatMap((f) => [...splitWords(f.name), ...f.phrases.flatMap((p) => p.split(' '))])
+  );
+  if (parts.some((w) => fieldWords.has(w))) return `names a ${chosen.type} field`;
+  const q = question.toLowerCase();
+  const dated =
+    !OCCURRED.has(word) &&
+    chosen.evidence.some((e) => e.role === 'time' && q.includes(`${word} ${e.span.toLowerCase()}`));
+  return dated ? 'says which date is meant' : null;
+}
+
 export interface JudgeOptions {
   /** Judge rounds before giving up. Default 3. */
   rounds?: number;
@@ -294,6 +320,18 @@ export async function parseWithJudge(
           const reason = chosen.strict
             ? `unexplained under a strict reading: ${chosen.residual.join(', ')}`
             : `a digit is never noise: ${digits.join(', ')}`;
+          return {
+            status: 'escalated',
+            result: { status: 'partial', candidates: [chosen], residual: chosen.residual, reason },
+            trail
+          };
+        }
+        // Nor is a word that changes what is asked: running without it answers a broader question.
+        const meant = chosen.residual
+          .map((w) => [w, notNoise(w, question, chosen, pack)] as const)
+          .filter(([, why]) => why !== null);
+        if (meant.length > 0) {
+          const reason = `not noise: ${meant.map(([w, why]) => `"${w}" ${why}`).join('; ')}`;
           return {
             status: 'escalated',
             result: { status: 'partial', candidates: [chosen], residual: chosen.residual, reason },

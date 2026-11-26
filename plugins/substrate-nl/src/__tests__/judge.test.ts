@@ -66,6 +66,21 @@ describe('applying a choice', () => {
     expect(JSON.stringify(where(r))).toContain('createdAt');
   });
 
+  it('a pick never calls a word noise when it changes what is asked', async () => {
+    const pick = () => scripted({ action: 'pick', candidate: 0 });
+    for (const [q, why] of [
+      ['average daily todos', '"average" asks for an aggregate or a grouping'],
+      ['priority todos', '"priority" names a Todo field'],
+      ['todos due in 2026', '"due" says which date is meant']
+    ] as const) {
+      const r = await parseWithJudge(q, pack, ctx, pick());
+      expect(r.status, q).toBe('escalated');
+      expect(r.status === 'escalated' && r.result.reason, q).toContain(why);
+    }
+    // A word that is none of those is still noise, and the reading runs.
+    expect((await parseWithJudge('zorblax todos', pack, ctx, pick())).status).toBe('resolved');
+  });
+
   it('a binding becomes a predicate on the bound word, verbatim', async () => {
     const r = await parseWithJudge(
       'agents for zebra',
