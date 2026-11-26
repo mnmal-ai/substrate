@@ -792,7 +792,7 @@ export function editorPanels(deps: TuiDeps): {
     const st = deps.admin.state();
     const who = st.kind === 'unlocked' ? st.kid : 'unknown';
     void deps.admin
-      .run(async ({ client }): Promise<{ line: string; select?: string; code?: string }> => {
+      .run(async ({ client }): Promise<{ line: string; select?: string; token?: string }> => {
         if (f.kind === 'revoke') {
           await client.admin.revoke(f.row.kid);
           return { line: `✓ revoked ${f.row.kid}` };
