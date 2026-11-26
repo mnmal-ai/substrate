@@ -145,6 +145,8 @@ export interface ReviewState {
   readonly refreshNote?: string;
   /** Set only for an applied invite: its join token, shown in this panel, never printed. */
   readonly inviteToken?: string;
+  /** The server URL that token carries: where the invitee's machine will redeem it. */
+  readonly inviteOrigin?: string;
   readonly table: readonly AdminKeyRow[];
 }
 
@@ -316,6 +318,7 @@ function reviewView(
           ? [
               // Never truncated: a clipped token is a useless token. Wrapped to fit instead.
               ...wrapCode(sanitise(s.inviteToken), w),
+              `  redeems at ${sanitise(s.inviteOrigin ?? '')} — the invitee's machine must reach that URL`,
               '  give it to the invitee to paste into substrate federate join; it is not shown again',
               '  esc close'
             ]
@@ -841,7 +844,7 @@ export function editorPanels(deps: TuiDeps): {
           ctx.update('review', (x) => {
             open = true;
             return r.token !== undefined
-              ? { ...x, stage: 'done', inviteToken: r.token }
+              ? { ...x, stage: 'done', inviteToken: r.token, inviteOrigin: deps.endpoint }
               : { ...x, stage: 'done' };
           });
           // Re-read only into the panel this apply came from, and only while still unlocked.

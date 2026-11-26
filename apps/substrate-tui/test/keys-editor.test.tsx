@@ -571,6 +571,8 @@ describe('review and apply', () => {
       ['invite', { namespaces: ['journal'], capabilities: ['read'], kid: 'repo-claude@host-a' }]
     ]);
     expect(app.frame()).toContain('substrate-join-v1.TOKEN');
+    // The token carries this server URL, so the operator sees where it will be redeemed.
+    expect(app.frame()).toContain('redeems at http://h');
     await type(app, ESC);
     await tick(20);
     expect(app.frame()).not.toContain('substrate-join-v1.TOKEN');
