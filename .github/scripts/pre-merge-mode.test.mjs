@@ -4,7 +4,13 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { isDocsOnly, isVersionOnly, pickFollow } from './pre-merge-mode.mjs';
+import {
+  affectedDirs,
+  isDocsOnly,
+  isVersionOnly,
+  pickFollow,
+  workspaceGraph
+} from './pre-merge-mode.mjs';
 
 const bump =
   '@@ -1,4 +1,4 @@\n {\n   "name": "x",\n-  "version": "1.0.0-beta.3",\n+  "version": "1.0.0-beta.4",\n   "type": "module"';
@@ -88,4 +94,50 @@ test('follows the newest other run that started the suites', () => {
   ];
   assert.equal(pickFollow(runs, 4), 2);
   assert.equal(pickFollow(runs.slice(2, 3), 9), undefined);
+});
+
+const graph = {
+  'packages/types': [],
+  'packages/pg': ['packages/types'],
+  'packages/client': ['packages/types'],
+  'apps/server': ['packages/pg'],
+  'plugins/nl': ['apps/server']
+};
+const changed = (...names) => names.map((filename) => ({ filename }));
+
+test('a change reaches its package and everything that depends on it', () => {
+  assert.deepEqual(affectedDirs(changed('packages/pg/src/a.ts'), graph), [
+    'apps/server',
+    'packages/pg',
+    'plugins/nl'
+  ]);
+  assert.deepEqual(affectedDirs(changed('plugins/nl/src/a.ts'), graph), ['plugins/nl']);
+  assert.equal(affectedDirs(changed('packages/types/src/a.ts'), graph).length, 5);
+});
+
+test('a file outside every package reaches all of them', () => {
+  for (const f of ['pnpm-lock.yaml', '.github/workflows/ci.yml', 'turbo.json', 'packages/x.ts'])
+    assert.equal(affectedDirs(changed('plugins/nl/src/a.ts', f), graph), null, f);
+});
+
+test('docs paths reach nothing, and a rename counts at both ends', () => {
+  assert.deepEqual(affectedDirs(changed('README.md', 'plugins/nl/README.md'), graph), []);
+  assert.deepEqual(
+    affectedDirs(
+      [{ filename: 'packages/client/src/a.ts', previous_filename: 'packages/pg/src/a.ts' }],
+      graph
+    ),
+    ['apps/server', 'packages/client', 'packages/pg', 'plugins/nl']
+  );
+});
+
+test('the real workspace: the storage package reaches the server and plugins, nl does not', () => {
+  const real = workspaceGraph(new URL('../..', import.meta.url).pathname);
+  const pg = affectedDirs(changed('packages/substrate-dataset-pg/src/a.ts'), real);
+  for (const d of ['apps/substrate', 'plugins/substrate-recall', 'plugins/substrate-nl'])
+    assert.ok(pg.includes(d), d);
+  const nl = affectedDirs(changed('plugins/substrate-nl/src/a.ts'), real);
+  assert.ok(nl.includes('plugins/substrate-nl'));
+  for (const d of ['apps/substrate', 'packages/substrate-dataset-pg', 'plugins/substrate-recall'])
+    assert.ok(!nl.includes(d), d);
 });

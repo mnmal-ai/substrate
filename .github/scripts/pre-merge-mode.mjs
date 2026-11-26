@@ -2,10 +2,12 @@
  * Picks the pre-merge run's mode (see pre-merge.yml), and in `follow` mode waits for
  * the followed run's gate. Talks to the GitHub REST API with GH_TOKEN.
  *
- * CLI: `node pre-merge-mode.mjs` prints `mode=<run|follow|release|docs>` and `follow=<run id>`
- * for $GITHUB_OUTPUT. `node pre-merge-mode.mjs follow` exits 0 when run $FOLLOW's gate
- * succeeded, 1 otherwise.
+ * CLI: `node pre-merge-mode.mjs` prints `mode=<run|follow|release|docs>`, `follow=<run id>` and
+ * `only=<* | workspace dirs the change reaches, space-separated>` for $GITHUB_OUTPUT.
+ * `node pre-merge-mode.mjs follow` exits 0 when run $FOLLOW's gate succeeded, 1 otherwise.
  */
+
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 
 const GATE = 'Pre-merge Postgres gate';
 const SUITE_JOB = /^pg /;
@@ -49,6 +51,59 @@ export function isDocsOnly(files) {
     ({ filename, previous_filename }) =>
       isDocsPath(filename) && (previous_filename === undefined || isDocsPath(previous_filename))
   );
+}
+
+const WORKSPACE_ROOTS = ['apps', 'packages', 'plugins'];
+
+/**
+ * The workspace as `{ <dir>: [<dir of each workspace package it depends on>] }`, read from the
+ * package.json files under `root`.
+ * @param {string} root
+ */
+export function workspaceGraph(root = '.') {
+  const pkgs = WORKSPACE_ROOTS.flatMap((r) =>
+    existsSync(`${root}/${r}`) ? readdirSync(`${root}/${r}`).map((d) => `${r}/${d}`) : []
+  )
+    .filter((dir) => existsSync(`${root}/${dir}/package.json`))
+    .map((dir) => ({ dir, json: JSON.parse(readFileSync(`${root}/${dir}/package.json`, 'utf8')) }));
+  const dirOf = new Map(pkgs.map((p) => [p.json.name, p.dir]));
+  const graph = {};
+  for (const { dir, json } of pkgs) {
+    const deps = ['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies']
+      .flatMap((k) => Object.keys(json[k] ?? {}))
+      .map((name) => dirOf.get(name))
+      .filter((d) => d !== undefined && d !== dir);
+    graph[dir] = [...new Set(deps)].sort();
+  }
+  return graph;
+}
+
+/**
+ * The workspace dirs a PR's changes reach: each package with a changed file, and every package
+ * that depends on one, directly or through others. Docs paths reach nothing. `null` means all
+ * of them: a file outside every package changed (the lockfile, the catalog, a workflow, root
+ * config), and any package may read it.
+ * @param {Array<{ filename: string, previous_filename?: string }>} files
+ * @param {Record<string, string[]>} graph
+ */
+export function affectedDirs(files, graph) {
+  const changed = new Set();
+  for (const f of files.flatMap((x) => [x.filename, x.previous_filename])) {
+    if (f === undefined || isDocsPath(f)) continue;
+    const dir = f.split('/').slice(0, 2).join('/');
+    if (!Object.hasOwn(graph, dir)) return null;
+    changed.add(dir);
+  }
+  for (let grew = true; grew; ) {
+    grew = false;
+    for (const [dir, deps] of Object.entries(graph)) {
+      if (!changed.has(dir) && deps.some((d) => changed.has(d))) {
+        changed.add(dir);
+        grew = true;
+      }
+    }
+  }
+  return [...changed].sort();
 }
 
 /**
@@ -116,7 +171,7 @@ async function chooseMode() {
       if (follow !== undefined) return { mode: 'follow', follow };
     }
   }
-  return { mode: 'run' };
+  return { mode: 'run', only: affectedDirs(files, workspaceGraph()) };
 }
 
 async function followGate() {
@@ -138,8 +193,9 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   if (process.argv[2] === 'follow') {
     process.exit((await followGate()) ? 0 : 1);
   } else {
-    const { mode, follow } = await chooseMode();
+    const { mode, follow, only } = await chooseMode();
     console.log(`mode=${mode}`);
     console.log(`follow=${follow ?? ''}`);
+    console.log(`only=${only == null ? '*' : only.join(' ')}`);
   }
 }
