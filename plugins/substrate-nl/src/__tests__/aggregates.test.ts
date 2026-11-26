@@ -126,7 +126,13 @@ describe('a lone number nothing reads', () => {
       expect((await ask(q, e, served, picker)).kind, q).toBe('unknown');
       expect(query, q).not.toHaveBeenCalled();
     }
-    // Picked leftover words, with no digit among them, are noise: the reading runs.
+    // Nor an aggregate or unit word: without them the reading would list every sale.
+    {
+      const { e, query } = engine(() => ({ data: {} }));
+      expect((await ask('average daily sales', e, served, picker)).kind).toBe('unknown');
+      expect(query).not.toHaveBeenCalled();
+    }
+    // Any other picked leftover word is noise: the reading runs.
     const { e, query } = engine(() => ({ data: { 'shop/Item': [] } }));
     expect(await ask('zorblax items', e, served, picker)).toMatchObject({
       kind: 'rows',

@@ -1450,6 +1450,11 @@ const UNIT_ADJECTIVES: Record<string, TimeUnit> = {
   annually: 'year'
 };
 
+/** Whether `word` asks for an aggregate or names a grouping unit ("average", "daily"). */
+export function shapesAnswer(word: string): boolean {
+  return own(AGGREGATE_WORDS, word) !== undefined || own(UNIT_ADJECTIVES, word) !== undefined;
+}
+
 /** Whether the token just before or after token `k` is an aggregate word, claimed or not. */
 function besideAggregate(tokens: Token[], k: number): boolean {
   return [k - 1, k + 1].some((j) => own(AGGREGATE_WORDS, tokens[j]?.text ?? '') !== undefined);

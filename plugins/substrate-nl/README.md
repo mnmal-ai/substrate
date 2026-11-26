@@ -38,7 +38,7 @@ A **kernel-tier plugin**, installed separately: `pnpm add @mnmal-ai/substrate-nl
 }
 ```
 
-- `judge` optional: an [Ollama](https://ollama.com) server and model for the constrained judge (`timeoutMs` defaults to 20000). Absent means parser-only: every escalation is an honest hand-off. A slow or down judge hands off within `timeoutMs`. A hand-off with words the parser could not read answers `unknown` and runs nothing.
+- `judge` optional: an [Ollama](https://ollama.com) server and model for the constrained judge (`timeoutMs` defaults to 20000). Absent means parser-only: every escalation is an honest hand-off. A slow or down judge hands off within `timeoutMs`. A hand-off with words the parser could not read answers `unknown` and runs nothing. When the judge picks a reading, the words that reading left over are reported in `dropped` as `judge: noise`. The pick is refused, and the answer is `unknown`, when a leftover word has a digit, is an aggregate or unit word ("average", "daily"), is a word of one of the type's field names or phrases ("priority todos"), or sits right before the time expression ("todos due in 2026"); "happened" and "occurred" are exempt from the last.
 - `rulings` optional; per-namespace overrides merged over rulings the namespace declares.
 - `packTtlMs` how long a served pack is reused (default 300000).
 - `inFlightPerCaller` asks one caller may have running at once (default 4). One more is answered 429 `too_many_in_flight` with `retry-after`. Sessions that share a key count as one caller.
