@@ -25,7 +25,8 @@ export interface ProfileInput {
 /**
  * Distinct values of every indexed string field (and indexed list-of-string
  * field) in the namespace, reading up to `maxRows` rows per type. A field that
- * passes `maxDistinct` is marked truncated and stops growing.
+ * passes `maxDistinct` is marked truncated and stops growing. A field carries
+ * per-value row counts only when every row of its type was read.
  */
 export async function profileNamespace(input: ProfileInput): Promise<NamespaceProfile> {
   const maxDistinct = input.maxDistinct ?? 1000;
@@ -35,7 +36,9 @@ export async function profileNamespace(input: ProfileInput): Promise<NamespacePr
     const declared = input.schema.types[typeName]?.fields ?? {};
     const fields = Object.keys(declared).filter((f) => profiled(declared[f] as FieldDef));
     if (fields.length === 0) continue;
-    const seen = new Map<string, Set<string>>(fields.map((f) => [f, new Set<string>()]));
+    const seen = new Map<string, Map<string, number>>(
+      fields.map((f) => [f, new Map<string, number>()])
+    );
     const truncated = new Set<string>();
     let cursor: string | undefined;
     let rowsRead = 0;
@@ -46,11 +49,12 @@ export async function profileNamespace(input: ProfileInput): Promise<NamespacePr
         for (const f of fields) {
           if (truncated.has(f)) continue;
           const raw = row[f];
-          const values = Array.isArray(raw) ? raw : [raw];
-          const set = seen.get(f) as Set<string>;
+          // A list naming a value twice is still one row with that value.
+          const values = Array.isArray(raw) ? new Set(raw) : [raw];
+          const set = seen.get(f) as Map<string, number>;
           for (const v of values) {
             if (typeof v !== 'string' || v.length === 0) continue;
-            set.add(v);
+            set.set(v, (set.get(v) ?? 0) + 1);
             if (set.size > maxDistinct) {
               truncated.add(f);
               break;
@@ -63,12 +67,15 @@ export async function profileNamespace(input: ProfileInput): Promise<NamespacePr
 
     const out: Record<string, FieldProfile> = {};
     for (const f of [...fields].sort()) {
-      const values = [...(seen.get(f) as Set<string>)].sort();
+      const counted = seen.get(f) as Map<string, number>;
+      const values = [...counted.keys()].sort();
       const isTruncated = truncated.has(f);
       if (values.length === 0 && !isTruncated) continue;
       out[f] = {
         values: isTruncated ? values.slice(0, maxDistinct) : values,
-        truncated: isTruncated
+        truncated: isTruncated,
+        // The read ended on its last page, so each count is the whole type's.
+        ...(cursor === undefined && !isTruncated ? { counts: Object.fromEntries(counted) } : {})
       };
     }
     types[typeName] = out;

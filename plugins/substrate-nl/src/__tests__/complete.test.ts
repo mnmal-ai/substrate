@@ -25,6 +25,29 @@ describe('complete', () => {
     );
   });
 
+  it('field: shows each value row count when the pack carries one', () => {
+    const counted = {
+      ...pack,
+      values: {
+        ...pack.values,
+        labs: [{ type: 'Todo', field: 'project', value: 'labs', count: 1 }],
+        substrate: [
+          { type: 'Decision', field: 'project', value: 'substrate', count: 9 },
+          { type: 'Todo', field: 'project', value: 'substrate', count: 40 }
+        ]
+      }
+    };
+    const detail = (draft: string, insert: string) =>
+      complete(draft, draft.length, counted).find((s) => s.insert === insert)?.detail;
+    expect(detail('todos project:', 'labs')).toBe('1 row');
+    expect(detail('todos project:', 'substrate')).toBe('40 rows');
+    expect(detail('todos project:su', 'substrate')).toBe('40 rows');
+    // No count in the pack, no detail.
+    expect(complete('todos project:', 14, pack).find((s) => s.insert === 'labs')?.detail).toBe(
+      undefined
+    );
+  });
+
   it('suggests project names from the profile', () => {
     expect(labels('todos in la')).toContain('labs');
   });

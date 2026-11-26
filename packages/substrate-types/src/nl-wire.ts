@@ -221,6 +221,8 @@ export interface NlPackValueRef {
   field: string;
   /** The value as stored, original casing. */
   value: string;
+  /** Rows of `type` whose `field` holds the value, as the caller may read them. Absent when not counted. */
+  count?: number;
 }
 
 export interface NlNamespacePack {
