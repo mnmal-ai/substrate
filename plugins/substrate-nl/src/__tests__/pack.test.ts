@@ -202,6 +202,28 @@ describe('buildNamespacePack', () => {
     expect(pack.values.labs).toBeUndefined();
   });
 
+  it('carries a counted profile onto value refs, with 0 for an enum value no row holds', () => {
+    const pack = buildNamespacePack({
+      namespace: 'journal',
+      schema,
+      operators: OPERATORS,
+      profile: {
+        types: {
+          Todo: {
+            project: { values: ['labs'], truncated: false, counts: { labs: 3 } },
+            status: { values: ['open'], truncated: false, counts: { open: 2 } }
+          }
+        }
+      }
+    });
+    const todo = (key: string) => pack.values[key]?.find((r) => r.type === 'Todo');
+    expect(todo('labs')?.count).toBe(3);
+    expect(todo('open')?.count).toBe(2);
+    expect(todo('done')?.count).toBe(0);
+    // An uncounted profile leaves the refs as they were.
+    expect(build().values.labs?.every((r) => r.count === undefined)).toBe(true);
+  });
+
   it('carries the schema version and is deterministic', () => {
     const a = build();
     expect(a.schemaVersion).toBe('abc123def456');
@@ -230,9 +252,14 @@ describe('profileNamespace', () => {
     const profile = await profileNamespace({ schema, read, maxDistinct: 64 });
     expect(profile.types.Todo?.project).toEqual({
       values: ['labs', 'substrate'],
-      truncated: false
+      truncated: false,
+      counts: { labs: 1, substrate: 2 }
     });
-    expect(profile.types.Todo?.tags).toEqual({ values: ['recall', 'release'], truncated: false });
+    expect(profile.types.Todo?.tags).toEqual({
+      values: ['recall', 'release'],
+      truncated: false,
+      counts: { recall: 2, release: 1 }
+    });
     expect(profile.types.Todo?.notes).toBeUndefined();
     // Only indexed string fields and indexed string lists are requested.
     const todoPage = pages.find((p) => (p as { type: string }).type === 'Todo') as {
@@ -262,6 +289,7 @@ describe('profileNamespace', () => {
     };
     const profile = await profileNamespace({ schema, read, maxRows: 6 });
     expect(pages).toBe(3);
+    // The read stopped on its budget, so the tallies are partial and left out.
     expect(profile.types.Todo?.status).toEqual({ values: ['done', 'open'], truncated: false });
   });
 });

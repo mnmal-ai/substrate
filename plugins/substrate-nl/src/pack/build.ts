@@ -1,4 +1,5 @@
 import type { FieldDef, Schema } from '@mnmal-ai/substrate/sdk';
+import { own } from '../own.js';
 import type {
   NamespacePack,
   NamespaceProfile,
@@ -55,12 +56,15 @@ export function buildNamespacePack(input: BuildPackInput): NamespacePack {
       const def = declared[name] as FieldDef;
       const field = packField(name, def, operators);
       fields[name] = field;
-      for (const value of field.enum ?? []) refs.push({ type: typeName, field: name, value });
+      const observed = profile?.types[typeName]?.[name];
+      const counted = (value: string): { count?: number } =>
+        observed?.counts === undefined ? {} : { count: own(observed.counts, value) ?? 0 };
+      for (const value of field.enum ?? [])
+        refs.push({ type: typeName, field: name, value, ...counted(value) });
       // Aliases are indexed verbatim: the parser emits them as written and the
       // server canonicalises them, and expands any implications.
       for (const alias of Object.keys(field.aliases ?? {}))
         refs.push({ type: typeName, field: name, value: alias });
-      const observed = profile?.types[typeName]?.[name];
       if (
         observed !== undefined &&
         field.indexed &&
@@ -69,7 +73,8 @@ export function buildNamespacePack(input: BuildPackInput): NamespacePack {
         observed.values.length <= maxDistinct &&
         areLabels(observed.values)
       ) {
-        for (const value of observed.values) refs.push({ type: typeName, field: name, value });
+        for (const value of observed.values)
+          refs.push({ type: typeName, field: name, value, ...counted(value) });
         field.distinct = observed.values.length;
       }
     }

@@ -25,4 +25,6 @@ export interface NamespaceProfile {
 export interface FieldProfile {
   values: string[];
   truncated: boolean;
+  /** Rows holding each value. Absent when the type was not read to its end. */
+  counts?: Record<string, number>;
 }

@@ -106,15 +106,26 @@ export function complete(draft: string, cursor: number, pack: CompletePack): NlS
     const f = own(own(pack.types, type)?.fields, fieldName);
     if (f === undefined) return [];
     const valueStart = start + colon + 1;
+    // The row count of a value on this field, as the suggestion's detail.
+    const rows = (value: string): { detail?: string } => {
+      const n = own(pack.values, value.trim().toLowerCase())?.find(
+        (r) => r.type === type && r.field === fieldName
+      )?.count;
+      return n === undefined ? {} : { detail: n === 1 ? '1 row' : `${n} rows` };
+    };
     const pool: Pool[] = [
-      ...(f.enum ?? []).map((v) => ({ insert: v, label: v })),
+      ...(f.enum ?? []).map((v) => ({ insert: v, label: v, ...rows(v) })),
       ...Object.entries(f.aliases ?? {}).map(([alias, canon]) => ({
         insert: alias,
         label: `${alias} → ${canon}`
       })),
       ...Object.entries(pack.values)
         .filter(([, refs]) => refs.some((r) => r.type === type && r.field === fieldName))
-        .map(([v, refs]) => ({ insert: refs.find((r) => r.type === type)?.value ?? v, label: v }))
+        .map(([v, refs]) => ({
+          insert: refs.find((r) => r.type === type)?.value ?? v,
+          label: v,
+          ...rows(v)
+        }))
     ];
     const prefix = token.slice(colon + 1);
     if (OPERATOR_FORM.test(prefix)) return [];
@@ -124,7 +135,13 @@ export function complete(draft: string, cursor: number, pack: CompletePack): NlS
       const values = pool
         .filter((x) => !seen.has(x.insert) && seen.add(x.insert))
         .sort((a, b) => cmp(a.insert, b.insert))
-        .map((x) => ({ replace, insert: x.insert, label: x.label, score: 2 }));
+        .map((x) => ({
+          replace,
+          insert: x.insert,
+          label: x.label,
+          ...(x.detail !== undefined ? { detail: x.detail } : {}),
+          score: 2
+        }));
       const ops = f.operators.flatMap((op) => {
         const form = own(DSL_OPERATORS, op);
         return form === undefined
