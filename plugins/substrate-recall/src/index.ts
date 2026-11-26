@@ -145,6 +145,7 @@ export {
   lexicalMigration
 } from './migrations/0003_lexical.js';
 export { embeddingsNullableVectorMigration } from './migrations/0004_embeddings_nullable_vector.js';
+export { rowIdCollationMigration } from './migrations/0005_row_id_collation.js';
 export { checkParams, unknownParamMessage, unknownParams } from './params.js';
 export { PgClusterStore, type PgClusterStoreOptions } from './pg-cluster-store.js';
 export { PgEmbeddingsStore, type PgEmbeddingsStoreOptions } from './pg-embeddings-store.js';

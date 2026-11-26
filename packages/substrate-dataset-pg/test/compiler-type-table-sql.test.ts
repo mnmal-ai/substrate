@@ -212,11 +212,11 @@ describe('a type table compiles against its columns', () => {
 });
 
 describe('every column kind and state', () => {
-  it('a crossRef column compares bare for equality and in "C" byte order for ranges and sorts', () => {
+  it('a crossRef column compares and sorts bare, in its own "C" collation', () => {
     expect(where({ cert: { eq: 'c' } })).toContain('f_cert = $::text');
-    expect(where({ cert: { gt: 'c' } })).toContain('(f_cert COLLATE "C") > $::text');
+    expect(where({ cert: { gt: 'c' } })).toContain('f_cert > $::text');
     expect(render(buildOrderBy(sql, [['cert', 'asc']], castFor, OBS))).toBe(
-      'ORDER BY (f_cert COLLATE "C") ASC NULLS LAST'
+      'ORDER BY f_cert ASC NULLS LAST'
     );
   });
 
@@ -369,7 +369,7 @@ describe('a walk reads each type from its own table', () => {
     } as unknown as WhereClause;
     const text = render(buildWhere(sql, w, castFor, CERT, s));
     expect(text).toBe(
-      `( (EXISTS (SELECT 1 FROM ${SPEC.from} w3 WHERE w3.deleted_at IS NULL AND w3.id = r.f_spec AND (EXISTS (SELECT 1 FROM ((SELECT w4.* FROM ${SALE.from} w4 WHERE w4.deleted_at IS NULL AND w4.f_spec = w3.id AND w4.f_at = (SELECT max(w4.f_at) FROM ${SALE.from} w4 WHERE w4.deleted_at IS NULL AND w4.f_spec = w3.id) ORDER BY w4.id COLLATE "C" ASC LIMIT 1) UNION ALL (SELECT w4.* FROM ${SALE.from} w4 WHERE w4.deleted_at IS NULL AND w4.f_spec = w3.id AND w4.f_at IS NULL ORDER BY w4.id COLLATE "C" ASC LIMIT 1) LIMIT 1) w4)))) AND (NOT EXISTS (SELECT 1 FROM ${OBS.from} w5 WHERE w5.deleted_at IS NULL AND w5.f_cert = r.id AND (((w5.f_title IS NOT NULL AND w5.f_title = $::text))))) AND EXISTS (SELECT 1 FROM (SELECT (SELECT to_jsonb(count(*)) FROM ${OBS.from} w6 WHERE (w6.deleted_at IS NULL AND w6.f_cert = r.id)) AS v) w7 WHERE ( w7.v IS NOT NULL AND w7.v <> 'null'::jsonb AND (substrate_num(w7.v)::float8 IS NOT NULL AND '3'::float8 IS NOT NULL AND substrate_num(w7.v)::float8 >= '3'::float8))) AND EXISTS (SELECT 1 FROM ${OBS.from} w1 WHERE ( w1.deleted_at IS NULL AND w1.f_cert = r.id AND (((w1.f_price IS NOT NULL AND w1.f_price > $))) AND (EXISTS (SELECT 1 FROM ${OBS.from} w2 WHERE w2.deleted_at IS NULL AND w2.f_cert = r.id AND (((w2.${AT} IS NOT NULL AND w1.${AT} IS NOT NULL AND w2.${AT} > w1.${AT}))))))))`
+      `( (EXISTS (SELECT 1 FROM ${SPEC.from} w3 WHERE w3.deleted_at IS NULL AND w3.id = r.f_spec AND (EXISTS (SELECT 1 FROM ((SELECT w4.* FROM ${SALE.from} w4 WHERE w4.deleted_at IS NULL AND w4.f_spec = w3.id AND w4.f_at = (SELECT max(w4.f_at) FROM ${SALE.from} w4 WHERE w4.deleted_at IS NULL AND w4.f_spec = w3.id) ORDER BY (w4.id || '') ASC LIMIT 1) UNION ALL (SELECT w4.* FROM ${SALE.from} w4 WHERE w4.deleted_at IS NULL AND w4.f_spec = w3.id AND w4.f_at IS NULL ORDER BY (w4.id || '') ASC LIMIT 1) LIMIT 1) w4)))) AND (NOT EXISTS (SELECT 1 FROM ${OBS.from} w5 WHERE w5.deleted_at IS NULL AND w5.f_cert = r.id AND (((w5.f_title IS NOT NULL AND w5.f_title = $::text))))) AND EXISTS (SELECT 1 FROM (SELECT (SELECT to_jsonb(count(*)) FROM ${OBS.from} w6 WHERE (w6.deleted_at IS NULL AND w6.f_cert = r.id)) AS v) w7 WHERE ( w7.v IS NOT NULL AND w7.v <> 'null'::jsonb AND (substrate_num(w7.v)::float8 IS NOT NULL AND '3'::float8 IS NOT NULL AND substrate_num(w7.v)::float8 >= '3'::float8))) AND EXISTS (SELECT 1 FROM ${OBS.from} w1 WHERE ( w1.deleted_at IS NULL AND w1.f_cert = r.id AND (((w1.f_price IS NOT NULL AND w1.f_price > $))) AND (EXISTS (SELECT 1 FROM ${OBS.from} w2 WHERE w2.deleted_at IS NULL AND w2.f_cert = r.id AND (((w2.${AT} IS NOT NULL AND w1.${AT} IS NOT NULL AND w2.${AT} > w1.${AT}))))))))`
     );
     const nested = render(
       buildNested(

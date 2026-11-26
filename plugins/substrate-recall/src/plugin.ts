@@ -52,6 +52,7 @@ import {
 import { recallClustersMigration } from './migrations/0002_recall_clusters.js';
 import { type LexicalMigrationOptions, lexicalMigration } from './migrations/0003_lexical.js';
 import { embeddingsNullableVectorMigration } from './migrations/0004_embeddings_nullable_vector.js';
+import { rowIdCollationMigration } from './migrations/0005_row_id_collation.js';
 import {
   type ReadPolicyCheck,
   recallRouteHandler,
@@ -457,7 +458,8 @@ export function createRecallPlugin(cfg: RecallPluginConfig): KernelPlugin {
       }),
       // Likewise applied with no `lexicalStore` wired. Keep ordered by id.
       lexicalMigration(cfg.lexicalMigration ?? {}),
-      embeddingsNullableVectorMigration()
+      embeddingsNullableVectorMigration(),
+      rowIdCollationMigration()
     ],
 
     filterOperators:

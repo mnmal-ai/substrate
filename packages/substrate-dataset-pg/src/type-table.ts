@@ -63,14 +63,14 @@ export function columnKindOf(def: FieldDef): ColumnKind | undefined {
 
 /**
  * Text and enum columns are `"C"`, so compares and sorts are byte order, as
- * memory's. A crossRef column has `id`'s collation (the database default), so a
- * walk joins `far.id = near.f_x` (and `far.f_x = near.id`) bare, and an index
- * on either side serves it; it is ordered under `"C"` where it sorts.
+ * memory's. A crossRef column has `id`'s collation (also `"C"`), so a walk joins
+ * `far.id = near.f_x` (and `far.f_x = near.id`) bare, and an index on either
+ * side serves it.
  */
 export const PG_TYPE: Readonly<Record<ColumnKind, string>> = {
   text: 'text COLLATE "C"',
   enum: 'text COLLATE "C"',
-  crossRef: 'text',
+  crossRef: 'text COLLATE "C"',
   number: 'double precision',
   int16: 'smallint',
   int32: 'integer',
@@ -680,7 +680,7 @@ function createTableSql(
     'updated_at timestamptz NULL',
     'seq bigint NULL',
     ...fields.filter(([, f]) => ALIGN[f.kind] > 0).flatMap(column),
-    'id text PRIMARY KEY',
+    'id text COLLATE "C" PRIMARY KEY',
     `created_by_kind text NULL ${kindCheck('created_by_kind')}`,
     'created_by_id text NULL',
     `updated_by_kind text NULL ${kindCheck('updated_by_kind')}`,

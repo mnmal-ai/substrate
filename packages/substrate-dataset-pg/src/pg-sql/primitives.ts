@@ -202,7 +202,7 @@ function columnExprSql(column: TypedColumn, as: FieldAs, alias?: string): string
       return column.kind === 'date' ? `to_jsonb(${utcTextSql(col, 'MS')})` : `to_jsonb(${col})`;
     case 'rawText':
       // Uncollated, as `->>` is, so ILIKE case-folds under the database collation. A
-      // crossRef column has the database collation already, as `id` does.
+      // crossRef column stays bare, in `id`'s collation ("C"), so it joins with `id`.
       if (column.kind === 'text' || column.kind === 'enum') return `(${col} COLLATE "default")`;
       if (column.kind === 'crossRef') return col;
       return column.kind === 'date' ? utcTextSql(col, 'MS') : `${col}::text`;
@@ -229,7 +229,7 @@ function extraBranchSql(field: string, as: FieldAs, kind: ColumnKind, alias?: st
       // A null in `extra` reads absent, as `decodeRow` has it; `->>` already gives NULL for it.
       return `NULLIF(${pathSql([field], as, alias, 'extra')}, 'null'::jsonb)`;
     case 'text':
-      // Uncollated for a crossRef, as its column is.
+      // Uncollated for a crossRef: it only joins with `id`, whose collation the compare takes.
       return pathSql([field], kind === 'crossRef' ? 'rawText' : 'text', alias, 'extra');
     default:
       return pathSql([field], as, alias, 'extra');
@@ -266,8 +266,7 @@ const rawOverlay = (field: string, value: string, alias?: string): string =>
 
 /**
  * A column field as it orders (sorts, ranges, pick keys): its compare form, in
- * byte order as memory sorts. Text and enum columns are `"C"` already; a
- * crossRef column has the database collation, so it is ordered under `"C"`.
+ * byte order as memory sorts. Text, enum and crossRef columns are `"C"` already.
  */
 export function columnOrderExpr(
   sql: Sql | TransactionSql,
@@ -275,8 +274,7 @@ export function columnOrderExpr(
   column: TypedColumn,
   alias?: string
 ): Fragment {
-  const e = fieldExprSql(table, column.field, columnAs(column.kind), alias);
-  return sql.unsafe(column.kind === 'crossRef' ? `(${e} COLLATE "C")` : e);
+  return sql.unsafe(fieldExprSql(table, column.field, columnAs(column.kind), alias));
 }
 
 /** {@link fieldExprSql} as a fragment. */
