@@ -411,6 +411,19 @@ export const CASES: GoldenCase[] = [
     })
   },
   {
+    name: 'percentile per group, interpolated',
+    type: 'Item',
+    params: p({
+      groupBy: { region: 'region' },
+      aggregate: { mid: { percentile: { value: 'n', p: 0.5 } } }
+    })
+  },
+  {
+    name: 'percentile nearest over an int64 is a value that occurs',
+    type: 'Item',
+    params: p({ aggregate: { top: { percentile: { value: 'big', p: 1, nearest: true } } } })
+  },
+  {
     name: 'group by a field, default key order',
     type: 'Item',
     params: p({ groupBy: { region: 'region' }, aggregate: { c: { count: true }, s: { sum: 'n' } } })

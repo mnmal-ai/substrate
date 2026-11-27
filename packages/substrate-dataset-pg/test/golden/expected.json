@@ -3313,6 +3313,39 @@
       }
     ]
   },
+  "percentile per group, interpolated": {
+    "rows": [],
+    "hasMore": false,
+    "groups": [
+      {
+        "region": 1,
+        "mid": 1
+      },
+      {
+        "region": 2,
+        "mid": 3
+      },
+      {
+        "region": 3,
+        "mid": 10
+      },
+      {
+        "region": null,
+        "mid": -1.25
+      }
+    ]
+  },
+  "percentile nearest over an int64 is a value that occurs": {
+    "rows": [],
+    "hasMore": false,
+    "groups": [
+      {
+        "top": {
+          "$int64": "9223372036854775807"
+        }
+      }
+    ]
+  },
   "group by a field, default key order": {
     "rows": [],
     "hasMore": false,

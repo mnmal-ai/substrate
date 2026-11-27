@@ -168,6 +168,61 @@ describe('grouped reads on memory and pg', () => {
     return first as Out;
   }
 
+  it('percentile: interpolated and nearest, per group, over a number and an int64', async () => {
+    for (const p of [0, 0.5, 0.9, 1]) {
+      const out = await same(
+        {
+          groupBy: { region: 'region' },
+          aggregate: {
+            m: { percentile: { value: 'w', p } },
+            n: { percentile: { value: 'w', p, nearest: true } },
+            u: { percentile: { value: 'user', p, nearest: true } },
+            ui: { percentile: { value: 'user', p } }
+          }
+        },
+        ['m', 'ui']
+      );
+      // Region 99 holds only nulls; region 98 only the largest int64.
+      const by = new Map((out.groups ?? []).map((g) => [g.region, g]));
+      expect(by.get(99)).toEqual({ region: 99, m: null, n: null, u: null, ui: null });
+      expect(String(by.get(98)?.u)).toBe(MAX);
+    }
+  });
+
+  it('percentile: over the whole result, an expression argument, and no rows', async () => {
+    const out = await same(
+      {
+        aggregate: {
+          m: { percentile: { value: 'w', p: 0.5 } },
+          d: { percentile: { value: { mul: ['w', 2] }, p: 0.25 } },
+          top: { percentile: { value: 'user', p: 1, nearest: true } }
+        }
+      },
+      ['m', 'd']
+    );
+    expect(String(out.groups?.[0]?.top)).toBe(MAX);
+    expect(typeof out.groups?.[0]?.m).toBe('number');
+    const none = await same({
+      where: { region: { eq: -1 } },
+      aggregate: { m: { percentile: { value: 'w', p: 0.5 } } }
+    });
+    expect(none.groups).toEqual([{ m: null }]);
+  });
+
+  it('percentile: filters in having and sorts in orderBy', async () => {
+    const out = await same(
+      {
+        groupBy: { region: 'region' },
+        aggregate: { m: { percentile: { value: 'w', p: 0.5 } } },
+        having: { gt: ['m', 12] },
+        orderBy: [{ m: 'desc' }]
+      },
+      ['m']
+    );
+    expect(out.groups?.length).toBeGreaterThan(0);
+    for (const g of out.groups ?? []) expect(g.m as number).toBeGreaterThan(12);
+  });
+
   it('query 7: a filtered count', async () => {
     const out = await same({ where: { region: { neq: 0 } }, aggregate: cnt });
     expect(out.groups).toEqual([{ c: 179 }]);

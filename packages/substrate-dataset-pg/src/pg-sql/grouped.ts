@@ -103,7 +103,7 @@ export function buildGroupedRead(
     return { name, i, frag: c.fragment, type: c.type };
   });
   const aggs = Object.entries(spec.aggregate).map(([name, a], j) => {
-    const { op, arg } = aggParts(a);
+    const { op, arg, p, nearest } = aggParts(a);
     const c = arg === true && op === 'count' ? undefined : compile(arg);
     const t = c?.type ?? null;
     const f = c?.fragment as Fragment;
@@ -132,10 +132,15 @@ export function buildGroupedRead(
             ? sql`sum(${f})::float8 / NULLIF(count(${f}), 0)::float8`
             : sql`avg(${text})`;
         break;
+      case 'percentile':
+        raw = nearest
+          ? sql`percentile_disc(${p}::float8) WITHIN GROUP (ORDER BY ${f})`
+          : sql`percentile_cont(${p}::float8) WITHIN GROUP (ORDER BY (${f})::float8)`;
+        break;
       default:
         raw = sql`${u(op)}(${t === 'string' ? sql`(${f}) COLLATE "C"` : f})`;
     }
-    const type = aggType(op, t);
+    const type = aggType(op, t, nearest);
     const a_ = u(`x.a${j}`);
     // The value as an expression of `type`, for having.
     let typed: Fragment;
