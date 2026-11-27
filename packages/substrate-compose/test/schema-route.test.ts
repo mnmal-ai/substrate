@@ -113,7 +113,8 @@ describe('GET /substrate/v1/schema', () => {
       'sum',
       'avg',
       'min',
-      'max'
+      'max',
+      'percentile'
     ]);
     expect(body.expressions.limits).toEqual({
       maxDepth: 16,

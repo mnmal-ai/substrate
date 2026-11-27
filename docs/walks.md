@@ -276,6 +276,16 @@ A walk aggregate is one value computed per seed row over the rows one walk reach
 | `"min": "<field>"` | the field's kind | number, integer or date |
 | `"max": "<field>"` | the field's kind | number, integer or date |
 | `"latest": { "by": "<date field>", "value": "<field>" }` | `value` of the far row latest by `by` | `value` is any scalar except json |
+| `"percentile": { "value": "<field>", "p": <0 to 1> }` | number; with `"nearest": true`, the field's kind | number or integer |
+
+`percentile` with `p: 0.5` is the median. It sorts the far rows' values, ignoring nulls, and reads position `p × (n − 1)`, interpolating between the two neighbours, so the median of an even count is the mean of the two middle values. `"nearest": true` returns a value that occurs instead (the first whose share of the sorted values reaches `p`), in the field's own kind, so an int64 stays exact. The median price over each cert's sales in a window:
+
+```json
+{ "cards/Cert": {
+  "fields": { "id": true, "_agg": {
+    "median90d": { "in": "cards/Sale.cert", "where": { "soldAt": { "gte": "2026-08-28T00:00:00Z" } },
+                   "percentile": { "value": "price", "p": 0.5 } } } } } }
+```
 
 An integer field is an int16, int32 or int64. An integer `sum` is exact (past 2^53 too) and, like an int64 field, comes back as a decimal string on the wire; a sum past int64 fails with `value_out_of_range`. `avg` is always a number, and an int16 or int32 `min` or `max` is a number. `avg`, `sum`, `min` and `max` ignore nulls. Over no far rows, every function is null except `count`, which is 0. `latest` breaks ties as a pick does: nulls last, then the lowest `id`.
 
@@ -384,7 +394,7 @@ These params shape the whole frame's answer rather than each row. They are docum
 
 ### `aggregate`, `groupBy`, `having`
 
-`aggregate` maps names to frame aggregates: `count` (`true` counts rows, an expression counts its non-null values), `countDistinct`, `avg`, `sum`, `min` and `max`, each over an expression. `latest` is a walk aggregate only and is refused here (`agg_invalid`). Without `groupBy` the answer is one group. With it, one group per distinct key:
+`aggregate` maps names to frame aggregates: `count` (`true` counts rows, an expression counts its non-null values), `countDistinct`, `avg`, `sum`, `min` and `max`, each over an expression, and `percentile` (`{ "value": <expr>, "p": <0 to 1>, "nearest"?: true }`, over a number or int64 expression, as the walk aggregate above). `latest` is a walk aggregate only and is refused here (`agg_invalid`). Without `groupBy` the answer is one group. With it, one group per distinct key:
 
 ```json
 { "ci/Run": { "params": {
