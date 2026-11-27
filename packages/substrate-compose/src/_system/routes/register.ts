@@ -27,6 +27,8 @@ import {
   weakKeyResponse
 } from './shared.js';
 
+const UUID_SHAPE = /^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
+
 interface RegisterBody {
   code: string;
   publicKey: string;
@@ -134,9 +136,13 @@ export function registerRoute(
     // consumed or expired invite; the conditional update below re-asserts
     // `consumedAt IS NULL` atomically.
     // An invite minted before row ids were derived has the code itself as its id.
+    // A UUID is never such a code: it is a row id, which audit rows show, and
+    // must not redeem the invite it names.
     const invite =
       (await dataset.read(INVITE_TYPE, { id: inviteRowId(body.code), limit: 1 })).rows[0] ??
-      (await dataset.read(INVITE_TYPE, { id: body.code, limit: 1 })).rows[0];
+      (UUID_SHAPE.test(body.code)
+        ? undefined
+        : (await dataset.read(INVITE_TYPE, { id: body.code, limit: 1 })).rows[0]);
     if (invite === undefined) {
       return jsonResponse(400, {
         code: 'invite_not_found',

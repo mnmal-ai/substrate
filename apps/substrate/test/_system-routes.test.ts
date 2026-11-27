@@ -547,6 +547,21 @@ describe('POST /substrate/v1/_system/register — happy path + validation', () =
     expect(row?.consumedAt).not.toBeNull();
   });
 
+  it("an invite's row id does not redeem it", async () => {
+    ctx = await mkServer();
+    const code = await mintInvite(ctx);
+    const res = await post(ctx, '/substrate/v1/_system/register', {
+      code: inviteRowId(code),
+      publicKey: edPem().publicKeyPem,
+      keyName: 'thief',
+      algorithm: 'EdDSA'
+    });
+    expect(res.status).toBe(400);
+    expect(jsonBody<{ code: string }>(res).code).toBe('invite_not_found');
+    const row = (await ctx.substrateDataset.read(INVITE_TYPE, { id: inviteRowId(code) })).rows[0];
+    expect(row?.consumedAt ?? null).toBeNull();
+  });
+
   it('concurrent registrations on the same code → exactly one succeeds, the other 409s', async () => {
     ctx = await mkServer();
     const code = await mintInvite(ctx);
