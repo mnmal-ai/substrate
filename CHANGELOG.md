@@ -2,6 +2,20 @@
 
 Releases before 1.0.0-alpha.21 are recorded only in their GitHub release notes.
 
+## 1.0.0-beta.19 (2026-11-27)
+
+Changes since 1.0.0-beta.18. This release fixes minting an invite on a store that enforces UUID row ids, and adds spacing to the TUI's `/keys` panels.
+
+### Fixed
+
+- **Minting an invite failed on a store with the row id UUID check (#358).** `POST /substrate/v1/_system/invites` and `substrate federate enroll` answered 500 there, because an invite's row id was its code. The row id is now a UUID derived from the code. An unconsumed invite minted by an older server still redeems.
+- **A server fault reaches the client with its code and message (#358).** `@mnmal-ai/substrate-client` reads the first entry of an `{ errors: [...] }` body into `code` and `serverMessage`, and a 5xx without a message reads `internal server error; the cause is in the server log`.
+
+### Changed
+
+- **An invite's code is no longer stored (#358).** The `_system/Invite` row and the `invite_created` and `invite_consumed` audit rows carry the row id where they carried the code.
+- **The TUI's `/keys` panels have more room (#359).** Each is inset two columns and one row. The grant editor has a blank row under its title and bold column headings, and a prompt shows the kid it is asking about in bold.
+
 ## 1.0.0-beta.18 (2026-11-26)
 
 Changes since 1.0.0-beta.17. This release adds a `percentile` aggregate and invites that name their kid, and makes Postgres order row ids as the memory dataset does. Two migrations run at boot and rebuild indexes under a table lock; see *Upgrade*. The `lean` MCP preset is unchanged.
