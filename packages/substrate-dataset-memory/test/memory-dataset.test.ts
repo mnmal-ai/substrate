@@ -626,3 +626,25 @@ describe('MemoryDataset short-id methods', () => {
     expect(await planeDs.resolveShortId('Todo', 1)).toBeNull();
   });
 });
+
+describe('a row a read returned', () => {
+  it('keeps its values when a later write changes the stored row', async () => {
+    const ds = new MemoryDataset({ namespace: 'app' });
+    const read = async () => (await ds.read('Note', { id: 'n1', includeDeleted: true })).rows[0];
+    const writes: Array<[string, () => Promise<unknown>]> = [
+      ['write', () => ds.write('Note', [{ id: 'n1', title: 'b' }])],
+      ['conditionalUpdate', () => ds.conditionalUpdate('Note', 'n1', {}, { title: 'c' })],
+      ['updateField', () => ds.updateField({ type: 'Note', id: 'n1' }, 'title', 'd')],
+      ['bindShortId', () => ds.bindShortId('Note', 7, 'n1')],
+      ['tombstone', () => ds.tombstone('Note', ['n1'])]
+    ];
+    await ds.write('Note', [{ id: 'n1', title: 'a' }]);
+    for (const [name, write] of writes) {
+      const held = await read();
+      const before = structuredClone(held);
+      await write();
+      expect(held, name).toEqual(before);
+      expect(await read(), name).not.toEqual(before);
+    }
+  });
+});
