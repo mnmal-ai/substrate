@@ -758,7 +758,8 @@ export class MemoryDataset implements Dataset {
       const row = b.get(id);
       if (!row) continue; // silent no-op for nonexistent
       if (row._deletedAt != null) continue; // terminal — preserve original
-      row._deletedAt = now;
+      // Replaced, never changed in place: a row a read returned keeps its values.
+      b.set(id, { ...row, _deletedAt: now });
       stampedIds.push(id);
     }
 
@@ -838,20 +839,13 @@ export class MemoryDataset implements Dataset {
     for (const [k, expected] of Object.entries(match)) {
       if (!conditionalMatchEq(row[k], expected)) return { matched: false, row: null };
     }
-    this.assertUnique(type, new Map([[id, withUpdates(row, updates)]]));
-    // Mutate the row in-place to match the `write()` upsert contract — nested
-    // `_deletedAt` writes are silently stripped so callers can't use this path
-    // to revive a tombstone.
-    for (const [k, v] of Object.entries(updates)) {
-      if (k === RESERVED_DELETED_AT) continue;
-      if (k === 'id') continue;
-      row[k] = v;
-    }
+    // `withUpdates` drops `_deletedAt` and `id`, so this path cannot revive a tombstone.
+    const next = withUpdates(row, updates);
+    this.assertUnique(type, new Map([[id, next]]));
     // Bump _metadata.updatedAt + updatedBy so rows mutated through this path
     // don't drift out of recency-ranked recall. Preserve createdAt
-    // and createdBy. `_metadata` is replaced with a fresh struct (not mutated
-    // in-place) so the returned row diverges from the stored row safely.
-    const prior = row._metadata as RowMetadata | undefined;
+    // and createdBy.
+    const prior = next._metadata as RowMetadata | undefined;
     const updatedBy: ActorIdentity = actor ?? { kind: 'system', id: 'anonymous' };
     const meta: RowMetadata = {
       createdAt: prior?.createdAt ?? null,
@@ -860,10 +854,12 @@ export class MemoryDataset implements Dataset {
       updatedBy,
       ...(prior?.seq !== undefined ? { seq: prior.seq } : {})
     };
-    row._metadata = meta;
+    next._metadata = meta;
+    // The stored row is replaced, never changed in place: a row a read returned keeps its values.
+    b.set(id, next);
     return {
       matched: true,
-      row: withoutNullColumns(this.columnFieldNames(type), { ...row })
+      row: withoutNullColumns(this.columnFieldNames(type), { ...next })
     };
   }
 
@@ -883,8 +879,10 @@ export class MemoryDataset implements Dataset {
 
     // seq is the dataset's, never the caller's, as on pg where it has its own column.
     const seq = (row._metadata as RowMetadata | undefined)?.seq;
-    this.assertUnique(ref.type, new Map([[ref.id, { ...row, [fieldName]: value }]]));
-    row[fieldName] = value;
+    const next: Row = { ...row, [fieldName]: value };
+    this.assertUnique(ref.type, new Map([[ref.id, next]]));
+    // Replaced, never changed in place: a row a read returned keeps its values.
+    b.set(ref.id, next);
     if (fieldName === '_metadata' && (value != null || seq !== undefined)) {
       // A null clears the columns, as pg's UPDATE does, but not seq.
       const meta = withoutSeq(
@@ -895,7 +893,7 @@ export class MemoryDataset implements Dataset {
           updatedBy: null
         }) as RowMetadata
       );
-      row._metadata = seq !== undefined ? { ...meta, seq } : meta;
+      next._metadata = seq !== undefined ? { ...meta, seq } : meta;
     }
   }
 
@@ -981,13 +979,12 @@ export class MemoryDataset implements Dataset {
   async bindShortId(type: string, shortId: number, rowId: string): Promise<void> {
     // Keep-first, as pg: a row's short id never moves, and a no-op leaves nothing to undo.
     if (!(await this.shortIds.bind(this.namespace, type, shortId, rowId))) return;
-    // Store shortId directly on the row so read() returns rows without any
-    // per-row spread allocation. The withTransaction
-    // snapshot shallow-clones every row, so the field is preserved/rolled
-    // back correctly via the store snapshot on throw.
+    // shortId is stored on the row, so read() returns it without a per-row spread.
+    // The row is replaced, never changed in place: a row a read returned keeps its
+    // values. The withTransaction snapshot restores the store on a throw.
     const b = this.store.get(type);
     const row = b?.get(rowId);
-    if (row !== undefined) row.shortId = shortId;
+    if (b !== undefined && row !== undefined) b.set(rowId, { ...row, shortId });
     // Inside an open tx, record the binding so rollback can undo it.
     // Outside a tx (#shortIdUndo === null), binds persist unconditionally.
     this.#shortIdUndo?.push({ type, shortId, rowId });
@@ -1075,7 +1072,7 @@ export class MemoryDataset implements Dataset {
     where: WhereClause,
     opts: FilterWriteOptions
   ): Promise<FilterWriteResult> {
-    // Copies: the tombstone stamps the stored rows in place.
+    // Copies: the result's rows are the caller's to change.
     const rows = (await this.#matchForWrite(type, where, opts.maxMatch)).map((r) => ({ ...r }));
     await this.tombstone(
       type,
