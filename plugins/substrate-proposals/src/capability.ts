@@ -559,6 +559,12 @@ export function gateNamespaceProposalLiveness(
       if ((args as { [TRUSTED_WRITE]?: true })[TRUSTED_WRITE] === true) {
         return resolver(ctx, args);
       }
+      // A name that is not a string would pass every check below, which test strings only.
+      if ('ns' in params && typeof params.ns !== 'string') {
+        throw new ProposalError('invalid_namespace', `${key}: 'ns' must be a string`, {
+          param: 'ns'
+        });
+      }
       const holds = (ns: string): boolean => gate({ ...ctx, namespace: ns }, args).allow;
       const { dataset } = args;
       if (isCreate) {

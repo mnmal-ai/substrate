@@ -36,7 +36,6 @@ export function defineProposalTypes(
   registryStore: RegistryStore,
   capability: string = DEFAULT_PROPOSE_CAPABILITY,
   indexCapability: string = DEFAULT_INDEX_CAPABILITY,
-  // shortcut: not threaded from SUBSTRATE_ADMIN_CAPABILITY; plumb it through the plugin config if a deployment renames admin.
   dropCapability: string = capability === '' ? '' : DEFAULT_DROP_CAPABILITY
 ): NamespaceDefinition {
   const policy = proposeToWrite(capability, indexCapability);

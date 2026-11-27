@@ -54,7 +54,6 @@ export function isProposableNamespace(ns: unknown): ns is string {
 export function defineControlPlaneTypes(
   registryStore: RegistryStore,
   capability: string = DEFAULT_PROPOSE_CAPABILITY,
-  // shortcut: not threaded from SUBSTRATE_ADMIN_CAPABILITY, as for defineProposalTypes.
   dropCapability: string = capability === '' ? '' : DEFAULT_DROP_CAPABILITY,
   /** Runs once an ActionProposal archive commits, with the row as written. */
   actionArchived: (row: Row) => Promise<void> = async () => {}
