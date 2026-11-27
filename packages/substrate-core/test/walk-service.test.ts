@@ -172,6 +172,16 @@ describe('classifyWalkService', () => {
     expect(at(spelled, 'fields', 'e', 'orderBy')?.served).toBe(false);
     // A pick or min/max is a min/max probe, which either direction serves.
     expect(at(plan, 'fields', '_agg', 'first', 'min')?.served).toBe(true);
+    // A percentile is reported under its own key, not as a count.
+    const pct = classify({
+      params: {},
+      fields: {
+        id: true,
+        _agg: { mid: { in: 'cards/Listing.cert', percentile: { value: 'price', p: 0.5 } } }
+      }
+    });
+    expect(at(pct, 'fields', '_agg', 'mid', 'percentile')).toBeDefined();
+    expect(at(pct, 'fields', '_agg', 'mid', 'count')).toBeUndefined();
     expect(at(plan, 'fields', 'a', 'orderBy')?.served).toBe(true);
     expect(at(plan, 'fields', 'b', 'orderBy')?.served).toBe(true);
     expect(at(plan, 'fields', 'c', 'orderBy')).toMatchObject({

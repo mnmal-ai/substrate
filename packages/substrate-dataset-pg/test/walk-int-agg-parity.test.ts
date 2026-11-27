@@ -183,6 +183,34 @@ describe.skipIf(!POSTGRES_URL)('walk aggregates over integers: pg and memory agr
     });
   });
 
+  it('a percentile keeps an int64 exact when nearest and is a number otherwise', async () => {
+    const pct = (value: string, p: number, nearest?: boolean) => ({
+      in: IN,
+      percentile: { value, p, ...(nearest ? { nearest } : {}) }
+    });
+    const got = await aggs({
+      top: pct('amount', 1, true),
+      mid: pct('amount', 0.5),
+      q: pct('qty', 0.5, true),
+      s: pct('small', 0, true),
+      qi: pct('qty', 0.5)
+    });
+    expect(got.c1).toMatchObject({ top: 9007199254740993n, q: 1, s: -4, qi: 1.5 });
+    expect(typeof (got.c1 as { mid: unknown }).mid).toBe('number');
+    expect(got.c2).toEqual({ top: 50n, mid: 50, q: 5, s: 1, qi: 5 });
+    expect(got.c3).toEqual({ top: null, mid: null, q: null, s: null, qi: null });
+  });
+
+  it('filters on a nearest int64 percentile with an int64 operand', async () => {
+    const where = {
+      _agg: { in: IN, percentile: { value: 'amount', p: 1, nearest: true } },
+      gte: '9007199254740993'
+    } as unknown as WhereClause;
+    const m = (await mem.read('Customer', { where })).rows.map((r) => r.id);
+    expect((await pg.read('Customer', { where })).rows.map((r) => r.id)).toEqual(m);
+    expect(m).toEqual([u('c1')]);
+  });
+
   it('filters on an int64 aggregate with an int64 operand', async () => {
     const labelled = (rows: Array<{ id?: unknown }>) =>
       rows.map((r) => [...ids].find(([, id]) => id === r.id)?.[0]).sort();

@@ -109,7 +109,7 @@ export function walkSites(
         const by: Order = [[String(node[fn]), fn === 'min' ? 'asc' : 'desc']];
         s.order = { by, path: [...path, fn], kind: 'agg' };
       } else {
-        s.agg = [...path, ['count', 'avg', 'sum'].find((k) => k in node) ?? 'count'];
+        s.agg = [...path, ['count', 'avg', 'sum', 'percentile'].find((k) => k in node) ?? 'count'];
       }
       addWhere(node.where, [...path, 'where']);
     } else if (selection !== undefined) {

@@ -169,6 +169,44 @@ const mustAgree: Array<[string, string, ReadParams, Expected]> = [
     ['c1', 'c2']
   ],
   [
+    'pick latest among the rows at or before a date on the seed row',
+    'Listing',
+    {
+      where: {
+        _walk: {
+          out: 'cert',
+          where: obs(
+            { price: { eq: 90 } },
+            {
+              pick: { latest: 'observedAt' },
+              among: { observedAt: { lte: { $ref: '$.firstSeen' } } }
+            }
+          )
+        }
+      } as unknown as WhereClause
+    },
+    ['l1']
+  ],
+  [
+    'a seed row with no far row at or before its date picks none',
+    'Listing',
+    {
+      where: {
+        _walk: {
+          out: 'cert',
+          where: obs(
+            { price: { gte: 0 } },
+            {
+              pick: { latest: 'observedAt' },
+              among: { observedAt: { lte: { $ref: '$.firstSeen' } } }
+            }
+          )
+        }
+      } as unknown as WhereClause
+    },
+    ['l1', 'l2a']
+  ],
+  [
     '$ref to the seed, times',
     'Cert',
     { where: obs({ price: { gte: { $ref: '$.ask', times: 1.25 } } }) },
@@ -299,6 +337,81 @@ const mustAgree: Array<[string, string, ReadParams, Expected]> = [
       c1: { _agg: { n: 2, avg: 110, hi: 130, last: 130, recent: 1 } },
       c4: { _agg: { n: 1, avg: null, hi: null, last: null, recent: 1 } },
       c7: { _agg: { n: 0, avg: null, hi: null, last: null, recent: 0 } }
+    }
+  ],
+  [
+    '_agg percentile in fields: interpolated, nearest, with a far where',
+    'Cert',
+    {
+      where: { grade: { eq: 9 } },
+      agg: agg({
+        mid: { in: OBS, percentile: { value: 'price', p: 0.5 } },
+        near: { in: OBS, percentile: { value: 'price', p: 0.5, nearest: true } },
+        sold: { in: OBS, where: { status: { eq: 'sold' } }, percentile: { value: 'price', p: 1 } }
+      })
+    },
+    {
+      c1: { _agg: { mid: 110, near: 90, sold: 130 } },
+      c2: { _agg: { mid: 70, near: 70, sold: null } },
+      c4: { _agg: { mid: null, near: null, sold: null } },
+      c5: { _agg: { mid: 475, near: 450, sold: 500 } },
+      c6: { _agg: { mid: 1000, near: 1000, sold: 1000 } },
+      c7: { _agg: { mid: null, near: null, sold: null } }
+    }
+  ],
+  [
+    '_agg percentile compared with a literal',
+    'Cert',
+    {
+      where: {
+        AND: [
+          { grade: { eq: 9 } },
+          { _agg: { in: OBS, percentile: { value: 'price', p: 0.5 } }, gte: 110 }
+        ]
+      } as unknown as WhereClause
+    },
+    ['c1', 'c5', 'c6']
+  ],
+  [
+    '_agg percentile compared with the seed row',
+    'Cert',
+    {
+      where: {
+        _agg: { in: OBS, percentile: { value: 'price', p: 0.5 } },
+        gt: { $ref: '$.ask' }
+      } as unknown as WhereClause
+    },
+    ['c1', 'c3', 'c5', 'c6']
+  ],
+  [
+    '_agg percentile over an out hop',
+    'Listing',
+    {
+      where: { price: { eq: 100 } },
+      agg: agg({ ask: { out: 'cert', percentile: { value: 'ask', p: 0.5 } } })
+    },
+    { l1: { _agg: { ask: 100 } }, l2a: { _agg: { ask: 80 } }, l4: { _agg: { ask: 50 } } }
+  ],
+  [
+    '_agg percentile sharing its window with the where walk',
+    'Cert',
+    {
+      where: obs({ observedAt: { gte: RECENT } }),
+      agg: agg({
+        m: {
+          in: OBS,
+          where: { observedAt: { gte: RECENT } },
+          percentile: { value: 'price', p: 0.5 }
+        }
+      })
+    },
+    {
+      c1: { _agg: { m: 130 } },
+      c2: { _agg: { m: 70 } },
+      c3: { _agg: { m: 100 } },
+      c4: { _agg: { m: null } },
+      c5: { _agg: { m: 450 } },
+      c6: { _agg: { m: 1000 } }
     }
   ],
   [

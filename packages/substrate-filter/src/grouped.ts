@@ -7,6 +7,7 @@ import type { Expr, ExprType, FrameAgg, OrderByClause, Row } from '@mnmal-ai/sub
 import { checkExpr } from './expr-check.js';
 import { evalExpr } from './expr-eval.js';
 import { int64Agg, outOfRange } from './int64-agg.js';
+import { percentileOf } from './percentile.js';
 import { storedMicros } from './predicate.js';
 import { isoFromMicros, numericAgg } from './walk.js';
 
@@ -19,19 +20,27 @@ export function canRaise(e: unknown): boolean {
   return Object.entries(e).some(([k, v]) => ARITHMETIC.has(k) || canRaise(v));
 }
 
-type Op = 'count' | 'countDistinct' | 'avg' | 'sum' | 'min' | 'max';
-const OPS: readonly Op[] = ['count', 'countDistinct', 'avg', 'sum', 'min', 'max'];
+type Op = 'count' | 'countDistinct' | 'avg' | 'sum' | 'min' | 'max' | 'percentile';
+const OPS: readonly Op[] = ['count', 'countDistinct', 'avg', 'sum', 'min', 'max', 'percentile'];
 
-/** An aggregate's function and argument. */
-export function aggParts(spec: FrameAgg): { op: Op; arg: Expr } {
+/** An aggregate's function and argument; a percentile's `p` and `nearest` too. */
+export function aggParts(spec: FrameAgg): { op: Op; arg: Expr; p: number; nearest: boolean } {
   const op = OPS.find((k) => Object.hasOwn(spec, k));
   if (op === undefined) throw new Error('internal: aggregate names no function');
-  return { op, arg: (spec as unknown as Record<Op, Expr>)[op] };
+  if ('percentile' in spec && op === 'percentile') {
+    const { value, p, nearest } = spec.percentile;
+    return { op, arg: value, p, nearest: nearest === true };
+  }
+  return { op, arg: (spec as unknown as Record<Op, Expr>)[op], p: 0, nearest: false };
 }
 
-/** The type an aggregate over an argument of type `arg` returns (`count` is a number). */
-export function aggType(op: Op, arg: ExprType | null): ExprType {
+/**
+ * The type an aggregate over an argument of type `arg` returns: a number for
+ * `count`, `countDistinct`, `avg` and an interpolated percentile, else the argument's.
+ */
+export function aggType(op: Op, arg: ExprType | null, nearest = false): ExprType {
   if (op === 'count' || op === 'countDistinct' || op === 'avg') return 'number';
+  if (op === 'percentile' && !nearest) return 'number';
   return arg ?? 'string';
 }
 
@@ -73,9 +82,15 @@ function compare(a: unknown, b: unknown, t: ExprType | null): number {
   return (a as number) < (b as number) ? -1 : (a as number) > (b as number) ? 1 : 0;
 }
 
-function aggregateOf(op: Op, arg: Expr, t: ExprType | null, values: unknown[], rows: number) {
+function aggregateOf(
+  { op, arg, p, nearest }: ReturnType<typeof aggParts>,
+  t: ExprType | null,
+  values: unknown[],
+  rows: number
+) {
   if (op === 'count') return arg === true ? rows : values.filter((v) => v !== null).length;
   const present = values.filter((v) => v !== null);
+  if (op === 'percentile') return percentileOf(present as Array<number | bigint>, p, nearest);
   if (op === 'countDistinct') return new Set(present.map((v) => encode(v, t))).size;
   if (present.length === 0) return null;
   if (t === 'int64') return int64Agg(op as 'avg' | 'sum' | 'min' | 'max', present as bigint[]);
@@ -114,7 +129,9 @@ export function groupRows(
   const argTypes = aggs.map((a) => typeOf(a.arg));
   const outTypes = new Map<string, ExprType | null>([
     ...keys.map(([n], i) => [n, keyTypes[i] as ExprType | null] as const),
-    ...aggs.map((a, i) => [a.name, aggType(a.op, argTypes[i] as ExprType | null)] as const)
+    ...aggs.map(
+      (a, i) => [a.name, aggType(a.op, argTypes[i] as ExprType | null, a.nearest)] as const
+    )
   ]);
   const outType = (name: string) => outTypes.get(name) ?? undefined;
   const env = { fieldType };
@@ -146,7 +163,7 @@ export function groupRows(
       aggs.forEach((a, i) => {
         const at = argTypes[i] as ExprType | null;
         const values = rows.map((r) => readable(evalExpr(a.arg, r, env) ?? null, at));
-        g[a.name] = aggregateOf(a.op, a.arg, argTypes[i] as ExprType | null, values, rows.length);
+        g[a.name] = aggregateOf(a, argTypes[i] as ExprType | null, values, rows.length);
       });
       groups.push(g);
     }
