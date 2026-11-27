@@ -15,7 +15,7 @@ import { extractClientIp, ipCapKey, jsonResponse } from '../../routes/helpers.js
 import { buildAuditRow } from '../install.js';
 import type { RateLimiter } from '../rate-limit.js';
 import type { KeyRegistry } from '../registry.js';
-import { AUDIT_EVENT_TYPE, INVITE_TYPE, KEY_ALGORITHMS, KEY_TYPE } from '../types.js';
+import { AUDIT_EVENT_TYPE, INVITE_TYPE, inviteRowId, KEY_ALGORITHMS, KEY_TYPE } from '../types.js';
 import {
   algorithmMatchesKey,
   badRequest,
@@ -133,14 +133,17 @@ export function registerRoute(
     // Early checks give distinct status codes (400 / 409 / 410) for a missing,
     // consumed or expired invite; the conditional update below re-asserts
     // `consumedAt IS NULL` atomically.
-    const inviteRead = await dataset.read(INVITE_TYPE, { id: body.code, limit: 1 });
-    const invite = inviteRead.rows[0];
+    // An invite minted before row ids were derived has the code itself as its id.
+    const invite =
+      (await dataset.read(INVITE_TYPE, { id: inviteRowId(body.code), limit: 1 })).rows[0] ??
+      (await dataset.read(INVITE_TYPE, { id: body.code, limit: 1 })).rows[0];
     if (invite === undefined) {
       return jsonResponse(400, {
         code: 'invite_not_found',
         message: 'invite code not recognised'
       });
     }
+    const inviteId = invite.id as string;
     if (invite.consumedAt != null) {
       return jsonResponse(409, {
         code: 'invite_already_consumed',
@@ -190,7 +193,7 @@ export function registerRoute(
         // double-spend guard. A lost race aborts the tx and maps to 409.
         const consumed = await tx.conditionalUpdate(
           INVITE_TYPE,
-          body.code,
+          inviteId,
           { consumedAt: null },
           { consumedAt: createdAt.toISOString(), consumedBy: kid },
           { kind: 'agent', id: kid }
@@ -229,7 +232,7 @@ export function registerRoute(
             buildAuditRow({
               actorKid: kid,
               kind: 'invite_consumed',
-              targetKid: body.code,
+              targetKid: inviteId,
               clientIp,
               details: { consumedBy: kid },
               now: createdAt

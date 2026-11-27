@@ -292,7 +292,12 @@ export class MemorySubstrateServer implements SubstrateServer {
             schemaVersion: '',
             data: {},
             shapes: {},
-            errors: [{ message: 'internal server error', code: 'internal_error' }]
+            errors: [
+              {
+                message: 'internal server error; the cause is in the server log',
+                code: 'internal_error'
+              }
+            ]
           })
         };
       }

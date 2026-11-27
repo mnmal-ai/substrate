@@ -85,6 +85,7 @@ export {
   INDEX_RECOMMENDATION_TYPE,
   INVITE_FIELDS,
   INVITE_TYPE,
+  inviteRowId,
   isKeyAlgorithm,
   KEY_ALGORITHMS,
   KEY_FIELDS,

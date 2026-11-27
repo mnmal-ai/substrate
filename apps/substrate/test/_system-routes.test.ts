@@ -17,6 +17,7 @@ import {
   compose,
   createRateLimiter,
   INVITE_TYPE,
+  inviteRowId,
   KEY_TYPE,
   type RateLimiter,
   SYSTEM_NAMESPACE,
@@ -160,9 +161,14 @@ describe('POST /substrate/v1/_system/invites', () => {
     // expiresAt must parse to a future timestamp.
     expect(new Date(body.expiresAt).getTime()).toBeGreaterThan(Date.now());
 
-    // Invite row persisted under the returned code.
-    const inviteRead = await ctx.substrateDataset.read(INVITE_TYPE, { id: body.code });
+    // The row id is a UUID derived from the code: a store that enforces UUID ids takes it,
+    // and the code itself is not stored.
+    const inviteRead = await ctx.substrateDataset.read(INVITE_TYPE, { id: inviteRowId(body.code) });
     expect(inviteRead.rows).toHaveLength(1);
+    expect(inviteRead.rows[0]?.id).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+    );
+    expect(JSON.stringify(inviteRead.rows[0])).not.toContain(body.code);
   });
 
   it('non-admin → 403', async () => {
@@ -283,7 +289,8 @@ describe('POST /substrate/v1/_system/invites — a named invite', () => {
     expect(res.status).toBe(201);
     const body = jsonBody<{ code: string; kid?: string }>(res);
     expect(body.kid).toBe(NAMED);
-    const row = (await ctx.substrateDataset.read(INVITE_TYPE, { id: body.code })).rows[0];
+    const row = (await ctx.substrateDataset.read(INVITE_TYPE, { id: inviteRowId(body.code) }))
+      .rows[0];
     expect(row?.kid).toBe(NAMED);
   });
 
@@ -293,7 +300,8 @@ describe('POST /substrate/v1/_system/invites — a named invite', () => {
     expect(res.status).toBe(201);
     const body = jsonBody<{ code: string }>(res);
     expect('kid' in body).toBe(false);
-    const row = (await ctx.substrateDataset.read(INVITE_TYPE, { id: body.code })).rows[0];
+    const row = (await ctx.substrateDataset.read(INVITE_TYPE, { id: inviteRowId(body.code) }))
+      .rows[0];
     expect(row?.kid ?? null).toBeNull();
   });
 
@@ -397,7 +405,7 @@ describe('POST /substrate/v1/_system/register — happy path + validation', () =
     // kid field holds the principal identifier returned in the response.
     expect(keyRow?.kid).toBe(body.kid);
 
-    const inviteRows = await ctx.substrateDataset.read(INVITE_TYPE, { id: code });
+    const inviteRows = await ctx.substrateDataset.read(INVITE_TYPE, { id: inviteRowId(code) });
     const invite = inviteRows.rows[0];
     expect(invite?.consumedBy).toBe(body.kid);
     expect(invite?.consumedAt).toBeDefined();
@@ -515,6 +523,30 @@ describe('POST /substrate/v1/_system/register — happy path + validation', () =
     expect(jsonBody<{ code: string }>(res).code).toBe('invalid_public_key');
   });
 
+  it('an invite stored under its raw code, as older servers wrote it, still redeems', async () => {
+    ctx = await mkServer();
+    const code = 'legacy-code-0123456789';
+    await ctx.substrateDataset.write(INVITE_TYPE, [
+      {
+        id: code,
+        namespaces: 'default',
+        capabilities: 'read',
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        consumedAt: null,
+        consumedBy: null
+      }
+    ]);
+    const res = await post(ctx, '/substrate/v1/_system/register', {
+      code,
+      publicKey: edPem().publicKeyPem,
+      keyName: 'legacy',
+      algorithm: 'EdDSA'
+    });
+    expect(res.status).toBe(201);
+    const row = (await ctx.substrateDataset.read(INVITE_TYPE, { id: code })).rows[0];
+    expect(row?.consumedAt).not.toBeNull();
+  });
+
   it('concurrent registrations on the same code → exactly one succeeds, the other 409s', async () => {
     ctx = await mkServer();
     const code = await mintInvite(ctx);
@@ -543,7 +575,8 @@ describe('POST /substrate/v1/_system/register — happy path + validation', () =
     expect(jsonBody<{ code: string }>(conflictRes).code).toBe('invite_already_consumed');
 
     // Exactly one Key landed for this invite.
-    const invite = (await ctx.substrateDataset.read(INVITE_TYPE, { id: code })).rows[0];
+    const invite = (await ctx.substrateDataset.read(INVITE_TYPE, { id: inviteRowId(code) }))
+      .rows[0];
     expect(invite?.consumedBy).toBeDefined();
     const allKeys = await ctx.substrateDataset.read(KEY_TYPE, {});
     expect(allKeys.rows).toHaveLength(1);
@@ -573,7 +606,7 @@ describe('POST /substrate/v1/_system/register — a named invite', () => {
       (r) => r.revokedAt == null
     );
   const invite = async (c: Ctx, code: string) =>
-    (await c.substrateDataset.read(INVITE_TYPE, { id: code })).rows[0];
+    (await c.substrateDataset.read(INVITE_TYPE, { id: inviteRowId(code) })).rows[0];
   const revoke = (c: Ctx, kid: string) =>
     c.server.inject({
       method: 'PATCH',
@@ -599,7 +632,7 @@ describe('POST /substrate/v1/_system/register — a named invite', () => {
     );
     expect(audit).toHaveLength(1);
     expect(audit[0]?.actorKid).toBe(NAMED);
-    expect(audit[0]?.targetKid).toBe(code);
+    expect(audit[0]?.targetKid).toBe(inviteRowId(code));
     expect(JSON.stringify({ ...audit[0], targetKid: null })).not.toContain(code);
   });
 

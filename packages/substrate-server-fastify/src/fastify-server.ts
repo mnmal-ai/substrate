@@ -219,7 +219,10 @@ export class FastifySubstrateServer implements SubstrateServer {
           shapes: {},
           errors: [
             internal
-              ? { message: 'internal server error', code: 'internal_error' }
+              ? {
+                  message: 'internal server error; the cause is in the server log',
+                  code: 'internal_error'
+                }
               : {
                   message: err.message,
                   code:
