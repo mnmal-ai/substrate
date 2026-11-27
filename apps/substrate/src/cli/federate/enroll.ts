@@ -17,7 +17,8 @@ import {
   AUDIT_EVENT_TYPE,
   buildAuditRow,
   encodeList,
-  INVITE_TYPE
+  INVITE_TYPE,
+  KEY_TYPE
 } from '@mnmal-ai/substrate-compose';
 import { type OpenDatasetFn, openPgDataset, type StoreEnv } from '../../admin/dataset.js';
 import { AdminCliError } from '../../admin/errors.js';
@@ -33,6 +34,8 @@ export interface EnrollArgs {
   namespaces: Array<string>;
   capabilities: Array<string>;
   ttlMs: number;
+  /** The kid the redeemed key gets, already checked by `parseEnrollArgs`. Unset: a random one. */
+  kid?: string | undefined;
 }
 
 export interface EnrollResult {
@@ -41,6 +44,8 @@ export interface EnrollResult {
   expiresAt: string;
   namespaces: Array<string>;
   capabilities: Array<string>;
+  /** Set for a named invite. */
+  kid?: string;
   /** Non-null when the auth probe could not reach the callee. */
   probeWarning: string | null;
 }
@@ -81,6 +86,18 @@ export async function runEnroll(
   const { dataset, close } = await openDataset(env);
   try {
     await dataset.withTransaction(async (tx) => {
+      // The interceptor's check, repeated: this write goes around the engine.
+      if (
+        args.kid !== undefined &&
+        (await tx.read(KEY_TYPE, { where: { kid: { eq: args.kid } } })).rows.some(
+          (r) => r.revokedAt == null
+        )
+      ) {
+        throw new AdminCliError(
+          `kid_already_live: '${args.kid}' is already registered and live — rotate or revoke it before inviting it`,
+          7
+        );
+      }
       await tx.write(
         INVITE_TYPE,
         [
@@ -90,7 +107,8 @@ export async function runEnroll(
             capabilities: encodeList(args.capabilities),
             expiresAt: expiresAt.toISOString(),
             consumedAt: null,
-            consumedBy: null
+            consumedBy: null,
+            kid: args.kid ?? null
           }
         ],
         { identity: { kind: 'system', id: CLI_ACTOR_KID }, now }
@@ -106,7 +124,8 @@ export async function runEnroll(
               origin: args.origin,
               namespaces: args.namespaces.join(','),
               capabilities: args.capabilities.join(','),
-              expiresAt: expiresAt.toISOString()
+              expiresAt: expiresAt.toISOString(),
+              ...(args.kid !== undefined ? { kid: args.kid } : {})
             },
             now
           })
@@ -124,6 +143,7 @@ export async function runEnroll(
     expiresAt: expiresAt.toISOString(),
     namespaces: args.namespaces,
     capabilities: args.capabilities,
+    ...(args.kid !== undefined ? { kid: args.kid } : {}),
     probeWarning
   };
 }
@@ -138,6 +158,7 @@ export function formatEnrollOutput(result: EnrollResult): string {
     `  origin:       ${result.origin}`,
     `  namespaces:   ${result.namespaces.join(', ')}`,
     `  capabilities: ${result.capabilities.join(', ')}`,
+    ...(result.kid !== undefined ? [`  kid:          ${result.kid}`] : []),
     `  expires:      ${result.expiresAt}`,
     '',
     `  token:        ${result.token}`,

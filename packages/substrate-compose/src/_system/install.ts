@@ -56,7 +56,7 @@ import type {
 import { createKeyedMutex } from '@mnmal-ai/substrate-types';
 import type { StoreProfileName } from '../advisor/profiles.js';
 import { type CreateKeyRegistryOptions, createKeyRegistry, type KeyRegistry } from './registry.js';
-import { grantProblem } from './routes/shared.js';
+import { grantProblem, kidProblem } from './routes/shared.js';
 import {
   ADVISOR_STATE_FIELDS,
   ADVISOR_STATE_TYPE,
@@ -691,6 +691,17 @@ export async function installSystemNamespace(
     createInvite: (base) => async (ctx: RequestContext, args: ResolverArgs) => {
       const { allowAdmin, ...params } = args.params ?? {};
       assertInviteGrant(params, allowAdmin);
+      if (params.kid != null) {
+        const problem = kidProblem(params.kid);
+        if (problem !== null) throw new ResolverFrameError(problem.code, problem.message);
+        // Redeeming would be refused, so the invite is not minted.
+        if ((await keysFor(args)).some((r) => r.kid === params.kid && isLive(r))) {
+          throw new ResolverFrameError(
+            'kid_already_live',
+            `kid '${String(params.kid)}' is already registered and live — rotate or revoke it before inviting it`
+          );
+        }
+      }
       const result = await base(ctx, { ...args, params });
       const inviteId = extractIdForInvalidation(result);
       if (inviteId !== null) {
@@ -702,7 +713,8 @@ export async function installSystemNamespace(
           details: {
             capabilities: params.capabilities,
             namespaces: params.namespaces,
-            expiresAt: params.expiresAt
+            expiresAt: params.expiresAt,
+            ...(params.kid != null ? { kid: params.kid } : {})
           },
           now: ctx.now
         });
@@ -711,6 +723,13 @@ export async function installSystemNamespace(
     },
     updateInvite: (base) => async (ctx: RequestContext, args: ResolverArgs) => {
       const { allowAdmin, ...params } = args.params ?? {};
+      // An invite's name is fixed at mint.
+      if (params.kid !== undefined) {
+        throw new ResolverFrameError(
+          'invalid_kid',
+          "an invite's kid cannot be changed; mint a new invite"
+        );
+      }
       // Only a grant the caller supplies is checked, as for `updateKey`.
       if (params.namespaces !== undefined || params.capabilities !== undefined) {
         const ds = args.dataset ?? opts.dataset;

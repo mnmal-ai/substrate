@@ -19,6 +19,7 @@ import {
   DEFAULT_TTL_MS,
   grantRefusal,
   type KeysRouteOptions,
+  kidProblem,
   MAX_TTL_MS,
   parseBody,
   refuseUnhosted,
@@ -58,6 +59,10 @@ export function invitesRoute(engine: Engine, opts: KeysRouteOptions): HttpHandle
     if (unknownNs.length > 0 && b.allowUnknownNs !== true) {
       return refuseUnhosted(engine, unknownNs);
     }
+    if (b.kid !== undefined) {
+      const problem = kidProblem(b.kid);
+      if (problem !== null) return badRequest(problem.code, problem.message);
+    }
     let ttlMs = DEFAULT_TTL_MS;
     if (b.ttlMs !== undefined) {
       const raw = b.ttlMs;
@@ -85,6 +90,7 @@ export function invitesRoute(engine: Engine, opts: KeysRouteOptions): HttpHandle
     };
     // The `createInvite` interceptor repeats the admin check, so it needs the opt-in too.
     if (b.allowAdmin === true) params.allowAdmin = true;
+    if (b.kid !== undefined) params.kid = b.kid;
 
     // Dispatch through the engine so the admin-gate policy on the mutation
     // still applies — the route-cap map adds an extra `admin` layer upstream
@@ -103,7 +109,7 @@ export function invitesRoute(engine: Engine, opts: KeysRouteOptions): HttpHandle
     if (envelope.errors !== undefined && envelope.errors.length > 0) {
       const first = envelope.errors[0];
       const code = first?.code ?? 'internal_error';
-      const status = refusalStatus(code);
+      const status = code === 'kid_already_live' ? 409 : refusalStatus(code);
       return jsonResponse(status, {
         code,
         message: first?.message ?? 'invite creation failed'
@@ -114,7 +120,8 @@ export function invitesRoute(engine: Engine, opts: KeysRouteOptions): HttpHandle
       code,
       expiresAt: expiresAt.toISOString(),
       namespaces,
-      capabilities
+      capabilities,
+      ...(b.kid !== undefined ? { kid: b.kid } : {})
     });
   };
 }

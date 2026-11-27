@@ -142,6 +142,21 @@ export function refuseUnhosted(engine: Engine, unknown: Array<string>): Substrat
   });
 }
 
+/** A named invite's kid: `<name>` or `<name>@<host>`, each of letters, digits, `.`, `_` and `-`. */
+const INVITE_KID = /^[A-Za-z0-9][A-Za-z0-9._-]*(@[A-Za-z0-9][A-Za-z0-9._-]*)?$/;
+
+/**
+ * Why `kid` cannot name an invite's key, or `null`. Narrower than what
+ * `POST /_system/keys` takes: the invitee pastes this kid into shells and env files.
+ */
+export function kidProblem(kid: unknown): { code: 'invalid_kid'; message: string } | null {
+  if (typeof kid === 'string' && kid.length <= MAX_KEY_NAME && INVITE_KID.test(kid)) return null;
+  return {
+    code: 'invalid_kid',
+    message: `kid must be '<name>' or '<name>@<host>' of letters, digits, '.', '_' and '-', at most ${MAX_KEY_NAME} characters`
+  };
+}
+
 /**
  * Refuse a grant that would store but not parse, or that confers admin
  * without `allowAdmin`. `null` when the grant is acceptable.

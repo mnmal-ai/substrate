@@ -11,6 +11,7 @@
 
 import { generateKeyPairSync } from 'node:crypto';
 import {
+  AUDIT_EVENT_TYPE,
   type AuthConfig,
   type ComposeResult,
   compose,
@@ -249,6 +250,88 @@ describe('POST /substrate/v1/_system/invites', () => {
   });
 });
 
+const NAMED = 'repo-claude@host-a';
+
+/** Seeds a Key row holding `kid`, live unless `revoked`. */
+async function seedKey(ctx: Ctx, kid: string, revoked = false): Promise<void> {
+  await ctx.substrateDataset.write(KEY_TYPE, [
+    {
+      kid,
+      name: kid,
+      algorithm: 'EdDSA',
+      publicKey: edPem().publicKeyPem,
+      namespaces: 'default',
+      capabilities: 'read',
+      revokedAt: revoked ? new Date() : null
+    }
+  ]);
+}
+
+describe('POST /substrate/v1/_system/invites — a named invite', () => {
+  let ctx: Ctx | null = null;
+  afterEach(async () => {
+    if (ctx !== null) {
+      await ctx.composed.stop();
+      ctx = null;
+    }
+  });
+  const grant = { namespaces: ['default'], capabilities: ['read'] };
+
+  it('kid given → 201 echoes it and the Invite row stores it', async () => {
+    ctx = await mkServer();
+    const res = await postAdmin(ctx, '/substrate/v1/_system/invites', { ...grant, kid: NAMED });
+    expect(res.status).toBe(201);
+    const body = jsonBody<{ code: string; kid?: string }>(res);
+    expect(body.kid).toBe(NAMED);
+    const row = (await ctx.substrateDataset.read(INVITE_TYPE, { id: body.code })).rows[0];
+    expect(row?.kid).toBe(NAMED);
+  });
+
+  it('kid omitted → row.kid is null and the response has no kid key', async () => {
+    ctx = await mkServer();
+    const res = await postAdmin(ctx, '/substrate/v1/_system/invites', grant);
+    expect(res.status).toBe(201);
+    const body = jsonBody<{ code: string }>(res);
+    expect('kid' in body).toBe(false);
+    const row = (await ctx.substrateDataset.read(INVITE_TYPE, { id: body.code })).rows[0];
+    expect(row?.kid ?? null).toBeNull();
+  });
+
+  it.each([
+    '',
+    'a'.repeat(129),
+    'x\ny',
+    'x\u001b[0m',
+    "o'brien@host",
+    'has space@host',
+    'two@at@signs',
+    '@host',
+    42
+  ])('kid %j → 400 invalid_kid, no row written', async (kid) => {
+    ctx = await mkServer();
+    const res = await postAdmin(ctx, '/substrate/v1/_system/invites', { ...grant, kid });
+    expect(res.status).toBe(400);
+    expect(jsonBody<{ code: string }>(res).code).toBe('invalid_kid');
+    expect((await ctx.substrateDataset.read(INVITE_TYPE, {})).rows).toHaveLength(0);
+  });
+
+  it('kid held by a live key → 409 kid_already_live, no row written', async () => {
+    ctx = await mkServer();
+    await seedKey(ctx, NAMED);
+    const res = await postAdmin(ctx, '/substrate/v1/_system/invites', { ...grant, kid: NAMED });
+    expect(res.status).toBe(409);
+    expect(jsonBody<{ code: string }>(res).code).toBe('kid_already_live');
+    expect((await ctx.substrateDataset.read(INVITE_TYPE, {})).rows).toHaveLength(0);
+  });
+
+  it('kid held only by a revoked key → 201', async () => {
+    ctx = await mkServer();
+    await seedKey(ctx, NAMED, true);
+    const res = await postAdmin(ctx, '/substrate/v1/_system/invites', { ...grant, kid: NAMED });
+    expect(res.status).toBe(201);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // POST /substrate/v1/_system/register
 // ---------------------------------------------------------------------------
@@ -260,6 +343,7 @@ async function mintInvite(
     capabilities: Array<string>;
     ttlMs?: number;
     allowUnknownNs?: boolean;
+    kid?: string;
   } = {
     namespaces: ['default'],
     capabilities: ['read']
@@ -463,6 +547,137 @@ describe('POST /substrate/v1/_system/register — happy path + validation', () =
     expect(invite?.consumedBy).toBeDefined();
     const allKeys = await ctx.substrateDataset.read(KEY_TYPE, {});
     expect(allKeys.rows).toHaveLength(1);
+  });
+});
+
+describe('POST /substrate/v1/_system/register — a named invite', () => {
+  let ctx: Ctx | null = null;
+  afterEach(async () => {
+    if (ctx !== null) {
+      await ctx.composed.stop();
+      ctx = null;
+    }
+  });
+  const named = (c: Ctx, kid = NAMED) =>
+    mintInvite(c, { namespaces: ['default'], capabilities: ['read'], kid });
+  const redeem = (c: Ctx, code: string, extra: Record<string, unknown> = {}) =>
+    post(c, '/substrate/v1/_system/register', {
+      code,
+      publicKey: edPem().publicKeyPem,
+      keyName: 'my-laptop',
+      algorithm: 'EdDSA',
+      ...extra
+    });
+  const liveKeys = async (c: Ctx, kid: string) =>
+    (await c.substrateDataset.read(KEY_TYPE, { where: { kid: { eq: kid } } })).rows.filter(
+      (r) => r.revokedAt == null
+    );
+  const invite = async (c: Ctx, code: string) =>
+    (await c.substrateDataset.read(INVITE_TYPE, { id: code })).rows[0];
+  const revoke = (c: Ctx, kid: string) =>
+    c.server.inject({
+      method: 'PATCH',
+      path: '/substrate/v1/_system/keys',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${adminToken()}` },
+      body: Buffer.from(JSON.stringify({ kid, revoke: true }))
+    });
+
+  it('→ 201 with that kid; Key.kid and Key.name are the invite kid, not keyName', async () => {
+    ctx = await mkServer();
+    const code = await named(ctx);
+    const res = await redeem(ctx, code);
+    expect(res.status).toBe(201);
+    expect(jsonBody<{ kid: string }>(res).kid).toBe(NAMED);
+    const keys = await liveKeys(ctx, NAMED);
+    expect(keys).toHaveLength(1);
+    expect(keys[0]?.name).toBe(NAMED);
+    expect((await invite(ctx, code))?.consumedBy).toBe(NAMED);
+
+    // The audit row names the new kid, and holds the code only as its target.
+    const audit = (await ctx.substrateDataset.read(AUDIT_EVENT_TYPE, {})).rows.filter(
+      (r) => r.kind === 'invite_consumed'
+    );
+    expect(audit).toHaveLength(1);
+    expect(audit[0]?.actorKid).toBe(NAMED);
+    expect(audit[0]?.targetKid).toBe(code);
+    expect(JSON.stringify({ ...audit[0], targetKid: null })).not.toContain(code);
+  });
+
+  it('→ the returned kid signs a JWT that /substrate/v1/query accepts, with no restart', async () => {
+    ctx = await mkServer();
+    const { publicKeyPem, privateKeyPem } = edPem();
+    const res = await redeem(ctx, await named(ctx), { publicKey: publicKeyPem });
+    expect(res.status).toBe(201);
+    const token = signEdDSA(
+      {
+        sub: 'x',
+        exp: Math.floor(Date.now() / 1000) + 60,
+        capabilities: ['read'],
+        ns: ['default']
+      },
+      privateKeyPem,
+      { kid: NAMED }
+    );
+    const queryRes = await ctx.server.inject({
+      method: 'POST',
+      path: '/substrate/v1/query',
+      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: Buffer.from(
+        JSON.stringify({ 'default/Todo': { params: { limit: 1 }, fields: { id: true } } })
+      )
+    });
+    expect(queryRes.status).toBe(200);
+  });
+
+  it('whose kid is now live → 409 kid_already_live; the invite stays unconsumed; it redeems once that key is revoked', async () => {
+    ctx = await mkServer();
+    const code = await named(ctx);
+    await seedKey(ctx, NAMED); // registered by hand after the mint
+    const res = await redeem(ctx, code);
+    expect(res.status).toBe(409);
+    expect(jsonBody<{ code: string }>(res).code).toBe('kid_already_live');
+    expect((await invite(ctx, code))?.consumedAt ?? null).toBeNull();
+    expect(await liveKeys(ctx, NAMED)).toHaveLength(1);
+
+    expect((await revoke(ctx, NAMED)).status).toBe(200);
+    expect((await redeem(ctx, code)).status).toBe(201);
+    expect(await liveKeys(ctx, NAMED)).toHaveLength(1);
+  });
+
+  it('whose kid is held only by a revoked key → 201', async () => {
+    ctx = await mkServer();
+    await seedKey(ctx, NAMED, true);
+    expect((await redeem(ctx, await named(ctx))).status).toBe(201);
+  });
+
+  it('two invites naming one kid redeemed concurrently → one 201, one 409; one live Key; the loser unconsumed', async () => {
+    ctx = await mkServer();
+    const codes = [await named(ctx), await named(ctx)];
+    const results = await Promise.all(codes.map((c) => redeem(ctx as Ctx, c)));
+    expect(results.map((r) => r.status).sort()).toEqual([201, 409]);
+    const loser = results.findIndex((r) => r.status === 409);
+    expect(jsonBody<{ code: string }>(results[loser] as SubstrateResponse).code).toBe(
+      'kid_already_live'
+    );
+    expect(await liveKeys(ctx, NAMED)).toHaveLength(1);
+    expect((await invite(ctx, codes[loser] as string))?.consumedAt ?? null).toBeNull();
+    expect((await invite(ctx, codes[1 - loser] as string))?.consumedBy).toBe(NAMED);
+  });
+
+  it('unnamed invite → kid is 22 base64url characters and Key.name is keyName', async () => {
+    ctx = await mkServer();
+    const res = await redeem(ctx, await mintInvite(ctx));
+    const { kid } = jsonBody<{ kid: string }>(res);
+    expect(kid).toMatch(/^[A-Za-z0-9_-]{22}$/);
+    expect((await liveKeys(ctx, kid))[0]?.name).toBe('my-laptop');
+  });
+
+  it('a kid field in the request body is ignored', async () => {
+    ctx = await mkServer();
+    const res = await redeem(ctx, await mintInvite(ctx), { kid: 'evil@host' });
+    expect(res.status).toBe(201);
+    expect(jsonBody<{ kid: string }>(res).kid).toMatch(/^[A-Za-z0-9_-]{22}$/);
+    expect(await liveKeys(ctx, 'evil@host')).toHaveLength(0);
   });
 });
 

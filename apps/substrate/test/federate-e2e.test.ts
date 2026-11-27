@@ -117,6 +117,34 @@ describe.skipIf(!POSTGRES_URL)('federation enrollment end to end', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
+  it('a named invite gives the joiner that kid, and a second one for it is refused', async () => {
+    // Unique per run: this database is shared with other pg-gated suites.
+    const kid = `repo-claude@host-${Date.now()}`;
+    const enroll = () =>
+      runEnroll(
+        { origin: ORIGIN, namespaces: ['demo'], capabilities: ['read'], ttlMs: 900_000, kid },
+        { SUBSTRATE_DATABASE_URL: POSTGRES_URL as string },
+        openPgDataset,
+        async () => 'enabled'
+      );
+    // Two invites minted while the kid is free: the first to redeem takes it.
+    const [first, second] = [await enroll(), await enroll()];
+    const joined = await runJoin(
+      { token: first.token, name: 'named-b', keyOut: pathJoin(dir, 'named.key') },
+      { httpJson: inject, hostname: () => 'caller-host' }
+    );
+    expect(joined.kid).toBe(kid);
+    const lateKey = pathJoin(dir, 'named-late.key');
+    await expect(
+      runJoin(
+        { token: second.token, name: 'named-c', keyOut: lateKey },
+        { httpJson: inject, hostname: () => 'caller-host' }
+      )
+    ).rejects.toThrow(/already registered and live/);
+    expect(existsSync(lateKey)).toBe(false);
+    await expect(enroll()).rejects.toThrow(/kid_already_live/);
+  });
+
   it('mints, redeems, scopes the key to the invite, and refuses a replay', async () => {
     const enrolled = await runEnroll(
       {

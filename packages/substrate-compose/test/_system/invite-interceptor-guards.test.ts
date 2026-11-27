@@ -10,7 +10,7 @@ import { MemoryDataset } from '@mnmal-ai/substrate-dataset-memory';
 import type { RequestContext, ResolverArgs } from '@mnmal-ai/substrate-types';
 import { describe, expect, it } from 'vitest';
 import { installSystemNamespace } from '../../src/_system/install.js';
-import { INVITE_TYPE, SYSTEM_NAMESPACE } from '../../src/_system/types.js';
+import { INVITE_TYPE, KEY_TYPE, SYSTEM_NAMESPACE } from '../../src/_system/types.js';
 
 const CTX = {
   identity: {
@@ -44,7 +44,7 @@ async function setup() {
       ...overrides
     });
   const stored = async (id: string) => (await store.read(INVITE_TYPE, { id })).rows[0];
-  return { call, create, stored };
+  return { call, create, stored, store };
 }
 
 describe('_system invite interceptors — grant checks', () => {
@@ -92,5 +92,40 @@ describe('_system invite interceptors — grant checks', () => {
     await expect(
       call('updateManyInvite', { where: { id: { eq: 'inv-m' } }, set: { namespaces: 'notes:' } })
     ).rejects.toMatchObject({ code: 'capability_unsupported' });
+  });
+
+  it('createInvite refuses a malformed kid and one a live key holds, and writes nothing', async () => {
+    const { create, stored, store } = await setup();
+    await expect(create('inv-k1', { kid: "o'brien@host" })).rejects.toMatchObject({
+      code: 'invalid_kid'
+    });
+    await store.write(KEY_TYPE, [
+      {
+        kid: 'repo-claude@host-a',
+        name: 'x',
+        algorithm: 'EdDSA',
+        publicKey: 'pem',
+        namespaces: 'notes',
+        capabilities: 'read',
+        revokedAt: null
+      }
+    ]);
+    await expect(create('inv-k2', { kid: 'repo-claude@host-a' })).rejects.toMatchObject({
+      code: 'kid_already_live'
+    });
+    expect(await stored('inv-k1')).toBeUndefined();
+    expect(await stored('inv-k2')).toBeUndefined();
+
+    await create('inv-k3', { kid: 'repo-claude@host-b' });
+    expect((await stored('inv-k3'))?.kid).toBe('repo-claude@host-b');
+  });
+
+  it("updateInvite refuses to change an invite's kid", async () => {
+    const { call, create, stored } = await setup();
+    await create('inv-k4', { kid: 'repo-claude@host-a' });
+    await expect(
+      call('updateInvite', { id: 'inv-k4', kid: 'other-claude@host-a' })
+    ).rejects.toMatchObject({ code: 'invalid_kid' });
+    expect((await stored('inv-k4'))?.kid).toBe('repo-claude@host-a');
   });
 });

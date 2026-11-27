@@ -289,7 +289,7 @@ export function keysModule(deps: TuiDeps): TuiModule<Panels> {
           ctx.update(p, (x) => {
             // The stage showing a freshly minted invite code does nothing as admin, and closing
             // it would lose a code that is not shown again.
-            const showingCode = p === 'review' && 'inviteCode' in x && x.inviteCode !== undefined;
+            const showingCode = p === 'review' && 'inviteToken' in x && x.inviteToken !== undefined;
             if (!showingCode) adminOpen = true;
             return x;
           });

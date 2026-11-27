@@ -52,14 +52,20 @@ export interface EditState {
   readonly note: string | null;
 }
 
-export type PromptPurpose = 'add-ns' | 'reg-kid' | 'reg-pubkey' | 'reg-name' | 'invite-ttl';
+export type PromptPurpose =
+  | 'add-ns'
+  | 'reg-kid'
+  | 'reg-pubkey'
+  | 'reg-name'
+  | 'invite-kid'
+  | 'invite-ttl';
 export interface PromptState {
   readonly purpose: PromptPurpose;
   readonly label: string;
   readonly error: string | null;
-  /** The editor to return to (add-ns, invite-ttl), or null for the register prompts before it. */
+  /** The editor to return to (add-ns, invite-kid, invite-ttl), or null for the register prompts before it. */
   readonly back: EditState | null;
-  /** Register answers gathered so far. */
+  /** Register answers gathered so far; for invite-ttl, the name the invite carries. */
   readonly kid?: string;
   /** Exactly as read from the file: the server hashes the body as received. */
   readonly publicKey?: string;
@@ -87,6 +93,18 @@ export function readInviteTtl(text: string): { ttlMs?: number } | { error: strin
   if (ttlMs === null) return { error: 'a duration like 30m, 12h or 7d' };
   if (ttlMs === undefined) return {};
   return ttlMs > MAX_INVITE_TTL_MS ? { error: 'at most 30 days' } : { ttlMs };
+}
+
+/** The server's rule for a named invite's kid (substrate-compose `kidProblem`), which still decides. */
+const INVITE_KID = /^[A-Za-z0-9][A-Za-z0-9._-]*(@[A-Za-z0-9][A-Za-z0-9._-]*)?$/;
+
+/** The invite-kid prompt's reading: a kid (absent for a random one), or why not. */
+export function readInviteKid(text: string): { kid?: string } | { error: string } {
+  const kid = text.trim();
+  if (kid === '') return {};
+  return kid.length <= 128 && INVITE_KID.test(kid)
+    ? { kid }
+    : { error: "name or name@host, of letters, digits, '.', '_' and '-'" };
 }
 
 const NS_NAME = /^(\*|[A-Za-z0-9_.-]+)$/;
@@ -118,13 +136,17 @@ export interface ReviewState {
   readonly next: Grant | null;
   readonly verdict: Verdict;
   readonly ttlMs?: number;
+  /** The kid a named invite carries. */
+  readonly inviteKid?: string;
   readonly stage: 'review' | 'applying' | 'done' | 'refused';
   readonly error: { readonly code: string; readonly message: string } | null;
   readonly mismatch: boolean;
   /** Why a refused review's state could not be refreshed, or what the refresh found (the kid is gone). */
   readonly refreshNote?: string;
-  /** Set only for an applied invite: shown in this panel, never printed. */
-  readonly inviteCode?: string;
+  /** Set only for an applied invite: its join token, shown in this panel, never printed. */
+  readonly inviteToken?: string;
+  /** The server URL that token carries: where the invitee's machine will redeem it. */
+  readonly inviteOrigin?: string;
   readonly table: readonly AdminKeyRow[];
 }
 
@@ -154,13 +176,20 @@ function verdictOf(deps: TuiDeps, s: EditState, next: Grant): Verdict {
     : newKeyVerdict({ kind: s.flow.kind, next, hosted, adminCapability });
 }
 
-function reviewOf(s: EditState, next: Grant, verdict: Verdict, ttlMs?: number): ReviewState {
+function reviewOf(
+  s: EditState,
+  next: Grant,
+  verdict: Verdict,
+  ttlMs?: number,
+  inviteKid?: string
+): ReviewState {
   return {
     flow: s.flow,
     edit: s,
     next,
     verdict,
     ...(ttlMs !== undefined ? { ttlMs } : {}),
+    ...(inviteKid !== undefined ? { inviteKid } : {}),
     stage: 'review',
     error: null,
     mismatch: false,
@@ -241,7 +270,9 @@ function reviewView(
       break;
     case 'invite':
       body.push(
-        `  invite for ${grantLine(next)}`,
+        s.inviteKid !== undefined
+          ? `  invite for ${s.inviteKid} · ${grantLine(next)}`
+          : `  invite for ${grantLine(next)}`,
         `  expires in ${s.ttlMs !== undefined ? ttlText(s.ttlMs) : 'the server default'}`
       );
       break;
@@ -283,11 +314,12 @@ function reviewView(
       break;
     case 'done':
       tail =
-        s.inviteCode !== undefined
+        s.inviteToken !== undefined
           ? [
-              // Never truncated: a clipped code is a useless code. Wrapped to fit instead.
-              ...wrapCode(sanitise(s.inviteCode), w),
-              '  give it to the invitee; it is not shown again',
+              // Never truncated: a clipped token is a useless token. Wrapped to fit instead.
+              ...wrapCode(sanitise(s.inviteToken), w),
+              `  redeems at ${sanitise(s.inviteOrigin ?? '')} — the invitee's machine must reach that URL`,
+              '  give it to the invitee to paste into substrate federate join; it is not shown again',
               '  esc close'
             ]
           : ['  esc close'];
@@ -490,8 +522,8 @@ export function editorPanels(deps: TuiDeps): {
           if (next.size === 0) return { ...s, note: EMPTY_NOTE };
           if (s.flow.kind === 'invite') {
             switchTo(ctx, deps, 'prompt', {
-              purpose: 'invite-ttl',
-              label: 'expires in (e.g. 30m, 12h, 7d; enter for the server default)',
+              purpose: 'invite-kid',
+              label: 'key name (e.g. repo-claude@host-a; enter for a random one)',
               error: null,
               back: s,
               table: s.table
@@ -600,6 +632,20 @@ export function editorPanels(deps: TuiDeps): {
             );
             return undefined;
           }
+          case 'invite-kid': {
+            if (s.back === null) return undefined;
+            const named = readInviteKid(line);
+            if ('error' in named) return { ...s, error: named.error };
+            switchTo(ctx, deps, 'prompt', {
+              purpose: 'invite-ttl',
+              label: 'expires in (e.g. 30m, 12h, 7d; enter for the server default)',
+              error: null,
+              back: s.back,
+              ...(named.kid !== undefined ? { kid: named.kid } : {}),
+              table: s.table
+            });
+            return undefined;
+          }
           case 'invite-ttl': {
             if (s.back === null) return undefined;
             const ttl = readInviteTtl(line);
@@ -609,7 +655,7 @@ export function editorPanels(deps: TuiDeps): {
               ctx,
               deps,
               'review',
-              reviewOf(s.back, next, verdictOf(deps, s.back, next), ttl.ttlMs)
+              reviewOf(s.back, next, verdictOf(deps, s.back, next), ttl.ttlMs, s.kid)
             );
             return undefined;
           }
@@ -749,7 +795,7 @@ export function editorPanels(deps: TuiDeps): {
     const st = deps.admin.state();
     const who = st.kind === 'unlocked' ? st.kid : 'unknown';
     void deps.admin
-      .run(async ({ client }): Promise<{ line: string; select?: string; code?: string }> => {
+      .run(async ({ client }): Promise<{ line: string; select?: string; token?: string }> => {
         if (f.kind === 'revoke') {
           await client.admin.revoke(f.row.kid);
           return { line: `✓ revoked ${f.row.kid}` };
@@ -781,23 +827,28 @@ export function editorPanels(deps: TuiDeps): {
         }
         const out = await client.admin.invite({
           ...w,
-          ...(s.ttlMs !== undefined ? { ttlMs: s.ttlMs } : {})
+          ...(s.ttlMs !== undefined ? { ttlMs: s.ttlMs } : {}),
+          ...(s.inviteKid !== undefined ? { kid: s.inviteKid } : {})
         });
-        return { line: `✓ invite minted for ${shown}, expires ${out.expiresAt}`, code: out.code };
+        const whom = s.inviteKid !== undefined ? `${s.inviteKid} ${shown}` : shown;
+        return {
+          line: `✓ invite minted for ${whom}, expires ${out.expiresAt}`,
+          token: out.token
+        };
       })
       .then(
         (r) => {
-          // The code stays out of this line: the transcript outlives the panel.
+          // The token stays out of this line: the transcript outlives the panel.
           ctx.print(sanitise(`${r.line} (admin: ${who})`), 'ok');
           let open = false;
           ctx.update('review', (x) => {
             open = true;
-            return r.code !== undefined
-              ? { ...x, stage: 'done', inviteCode: r.code }
+            return r.token !== undefined
+              ? { ...x, stage: 'done', inviteToken: r.token, inviteOrigin: deps.endpoint }
               : { ...x, stage: 'done' };
           });
           // Re-read only into the panel this apply came from, and only while still unlocked.
-          if (open && r.code === undefined && deps.admin.unlocked()) {
+          if (open && r.token === undefined && deps.admin.unlocked()) {
             void loadKeys(ctx, deps, r.select);
           }
         },
