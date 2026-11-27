@@ -150,3 +150,25 @@ describe('walk _agg picks compile to an index-order top-1', () => {
     }
   });
 });
+
+describe('walk _agg percentile compiles to an ordered-set aggregate', () => {
+  const pct = (nearest?: boolean): WalkAgg =>
+    ({
+      in: IN,
+      percentile: { value: 'price', p: 0.5, ...(nearest ? { nearest } : {}) }
+    }) as WalkAgg;
+
+  it('interpolated: percentile_cont over float8 in the per-hub subquery, no window, no top-1', () => {
+    const text = project({ mid: pct() }, scope({}));
+    expect(text).toMatch(
+      /percentile_cont\('0\.5'::float8\) WITHIN GROUP \(ORDER BY \(.+\)::float8\)/
+    );
+    expect(text).not.toMatch(/\bOVER\b|LIMIT 1/);
+  });
+
+  it('nearest: percentile_disc over the field', () => {
+    const text = project({ near: pct(true) }, scope({}));
+    expect(text).toMatch(/percentile_disc\('0\.5'::float8\) WITHIN GROUP \(ORDER BY /);
+    expect(text).not.toContain('percentile_cont');
+  });
+});

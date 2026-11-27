@@ -128,6 +128,26 @@ function aggOver(
       kind: isDate(value) ? 'date' : numeric ? 'number' : 'other'
     };
   }
+  if ('percentile' in spec) {
+    const { value, p, nearest } = spec.percentile;
+    const frac = float8Lit(sql, '_agg', 'percentile', p);
+    const int = integerType(fieldDef(value));
+    const v =
+      int === undefined
+        ? refValue(sql, table, value, 'number', alias)
+        : fieldExpr(sql, table, value, 'int64', alias);
+    // Interpolated in float8, as memory; a nearest value keeps its field's kind.
+    if (nearest !== true) {
+      return {
+        agg: sql`to_jsonb(percentile_cont(${frac}) WITHIN GROUP (ORDER BY (${v})::float8))`,
+        kind: 'number'
+      };
+    }
+    const one = sql`percentile_disc(${frac}) WITHIN GROUP (ORDER BY ${v})`;
+    return int === 'int64'
+      ? { agg: sql`to_jsonb((${one})::text)`, kind: 'int64' }
+      : { agg: sql`to_jsonb(${one})`, kind: 'number' };
+  }
   const op = AGG_OPS.find((k) => Object.hasOwn(spec, k));
   if (op === undefined) throw new Error('internal: aggregate names no function');
   const field = (spec as unknown as Record<string, string>)[op] as string;
