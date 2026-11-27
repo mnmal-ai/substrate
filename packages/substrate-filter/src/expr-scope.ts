@@ -75,12 +75,15 @@ function aggField(
   fieldDef: (ref: TypeRef, field: string) => FieldDef | undefined
 ): { fn: string; def: FieldDef | undefined } | undefined {
   const rec = spec as unknown as Record<string, unknown>;
-  const fn = (['count', 'sum', 'avg', 'min', 'max', 'latest'] as const).find((k) =>
+  const named = (['count', 'sum', 'avg', 'min', 'max', 'latest', 'percentile'] as const).find((k) =>
     Object.hasOwn(rec, k)
   );
-  if (fn === undefined) return undefined;
-  if (fn === 'count') return { fn, def: undefined };
-  const field = fn === 'latest' ? (rec.latest as { value: string }).value : rec[fn];
+  if (named === undefined) return undefined;
+  if (named === 'count') return { fn: named, def: undefined };
+  const arg = rec[named] as { value: string; nearest?: boolean };
+  // An interpolated percentile is typed as avg; a nearest one takes its field's type, as min.
+  const fn = named !== 'percentile' ? named : arg.nearest === true ? 'min' : 'avg';
+  const field = named === 'latest' || named === 'percentile' ? arg.value : rec[named];
   const far = walkFarType(spec, near, fieldDef);
   return far === undefined || typeof field !== 'string'
     ? undefined

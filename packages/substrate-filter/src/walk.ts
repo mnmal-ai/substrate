@@ -22,6 +22,7 @@ import {
 } from '@mnmal-ai/substrate-types';
 import { integerType } from './expr-scope.js';
 import { int64Agg } from './int64-agg.js';
+import { percentileOf } from './percentile.js';
 import {
   asSortValue,
   compareFilterValues,
@@ -303,6 +304,17 @@ export function applyAgg(rows: Row[], fn: AggFn, fieldDefOf: FieldDefOf): unknow
     const one = pickOne(rows, { latest: fn.latest.by }, fieldDefOf);
     return one === undefined ? null : (getFieldValue(one, fn.latest.value) ?? null);
   }
+  if ('percentile' in fn && Object.hasOwn(fn, 'percentile')) {
+    const { value, p, nearest } = fn.percentile;
+    const kind = integerType(fieldDefOf(value));
+    if (kind === undefined) {
+      const nums = rows.map((r) => getFieldValue(r, value)).filter((v) => typeof v === 'number');
+      return percentileOf(nums, p, nearest === true);
+    }
+    const out = percentileOf(integerValues(rows, value), p, nearest === true);
+    // An int16 or int32 value is the field's own number.
+    return typeof out === 'bigint' && kind !== 'int64' ? Number(out) : out;
+  }
   // A walk aggregate also carries in/out/where, so find the function key by name.
   const op = (['avg', 'sum', 'min', 'max'] as const).find((k) => Object.hasOwn(fn, k));
   if (op === undefined) throw new Error('internal: aggregate names no function');
@@ -315,16 +327,7 @@ export function applyAgg(rows: Row[], fn: AggFn, fieldDefOf: FieldDefOf): unknow
   }
   const int = integerType(fieldDefOf(field));
   if (int !== undefined) {
-    const present = rows
-      .map((r) => getFieldValue(r, field))
-      .flatMap((v) =>
-        typeof v === 'bigint'
-          ? [v]
-          : typeof v === 'number' && Number.isInteger(v)
-            ? [BigInt(v)]
-            : []
-      );
-    const out = int64Agg(op, present);
+    const out = int64Agg(op, integerValues(rows, field));
     // An int16 or int32 min/max is the field's own number.
     return typeof out === 'bigint' && op !== 'sum' && int !== 'int64' ? Number(out) : out;
   }
@@ -332,6 +335,15 @@ export function applyAgg(rows: Row[], fn: AggFn, fieldDefOf: FieldDefOf): unknow
     rows.map((r) => getFieldValue(r, field)),
     op
   );
+}
+
+/** An integer field's values over `rows` as bigints; anything that is not an integer drops out. */
+function integerValues(rows: Row[], field: string): bigint[] {
+  return rows
+    .map((r) => getFieldValue(r, field))
+    .flatMap((v) =>
+      typeof v === 'bigint' ? [v] : typeof v === 'number' && Number.isInteger(v) ? [BigInt(v)] : []
+    );
 }
 
 /** avg/sum/min/max over the numbers among `values` (the rest drop out), null over none; float64, a sum past its range is null. */
@@ -359,6 +371,7 @@ export function numericAgg(values: unknown[], op: 'avg' | 'sum' | 'min' | 'max')
 /** The field an aggregate's value is read from, or undefined for count. */
 function valueField(fn: AggFn): string | undefined {
   if ('latest' in fn && Object.hasOwn(fn, 'latest')) return fn.latest.value;
+  if ('percentile' in fn && Object.hasOwn(fn, 'percentile')) return fn.percentile.value;
   const op = (['avg', 'sum', 'min', 'max'] as const).find((k) => Object.hasOwn(fn, k));
   return op === undefined ? undefined : (fn as Record<string, string>)[op];
 }

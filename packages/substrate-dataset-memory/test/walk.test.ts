@@ -1125,3 +1125,65 @@ describe('count and aggregate over a type never written', () => {
     expect(agg.groups).toEqual([{ n: 0 }]);
   });
 });
+
+describe('percentile aggregate in memory', () => {
+  const OBS_CERT = 'cards/Observation.cert';
+  const fixture = () =>
+    dataset({
+      Cert: [{ id: 'c1' }, { id: 'c2' }, { id: 'c3' }],
+      Observation: [
+        { id: 'o1', cert: 'c1', price: 400, status: 'a' },
+        { id: 'o2', cert: 'c1', price: 100, status: 'a' },
+        { id: 'o3', cert: 'c1', price: 200, status: 'a' },
+        { id: 'o4', cert: 'c1', price: null, status: 'a' },
+        { id: 'o5', cert: 'c2', price: 10, status: 'b' },
+        { id: 'o6', cert: 'c2', price: 20, status: 'b' }
+      ]
+    });
+
+  it('is a walk _agg in fields: nulls skipped, null over no rows', async () => {
+    const ds = await fixture();
+    const agg = {
+      mid: { in: OBS_CERT, percentile: { value: 'price', p: 0.5 } },
+      near: { in: OBS_CERT, percentile: { value: 'price', p: 0.5, nearest: true } }
+    } as ReadParams['agg'];
+    const res = await ds.read('Cert', { orderBy: [{ id: 'asc' }], ...(agg ? { agg } : {}) });
+    expect(res.rows.map((r) => r._agg)).toEqual([
+      { mid: 200, near: 200 },
+      { mid: 15, near: 10 },
+      { mid: null, near: null }
+    ]);
+  });
+
+  it('is compared in where', async () => {
+    const ds = await fixture();
+    const where = {
+      _agg: { in: OBS_CERT, percentile: { value: 'price', p: 0.5 } },
+      gte: 200
+    } as WhereClause;
+    expect(await ids(ds, 'Cert', where)).toEqual(['c1']);
+  });
+
+  it('is a frame aggregate, per group, in having and orderBy', async () => {
+    const ds = await fixture();
+    const whole = await ds.read('Observation', {
+      aggregate: { mid: { percentile: { value: 'price', p: 0.5 } } }
+    } as ReadParams);
+    expect(whole.groups).toEqual([{ mid: 100 }]);
+    const grouped = await ds.read('Observation', {
+      aggregate: { mid: { percentile: { value: 'price', p: 0.5 } } },
+      groupBy: { s: 'status' },
+      orderBy: [{ mid: 'desc' }]
+    } as ReadParams);
+    expect(grouped.groups).toEqual([
+      { s: 'a', mid: 200 },
+      { s: 'b', mid: 15 }
+    ]);
+    const kept = await ds.read('Observation', {
+      aggregate: { mid: { percentile: { value: 'price', p: 0.5 } } },
+      groupBy: { s: 'status' },
+      having: { gt: ['mid', 100] }
+    } as ReadParams);
+    expect(kept.groups).toEqual([{ s: 'a', mid: 200 }]);
+  });
+});
