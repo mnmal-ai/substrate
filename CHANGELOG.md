@@ -2,6 +2,37 @@
 
 Releases before 1.0.0-alpha.21 are recorded only in their GitHub release notes.
 
+## 1.0.0-beta.18 (2026-11-26)
+
+Changes since 1.0.0-beta.17. This release adds a `percentile` aggregate and invites that name their kid, and makes Postgres order row ids as the memory dataset does. Two migrations run at boot and rebuild indexes under a table lock; see *Upgrade*. The `lean` MCP preset is unchanged.
+
+### Added
+
+- **A `percentile` aggregate (#356).** `{ percentile: { value, p } }` works wherever an aggregate does: a frame `aggregate`, a `groupBy` read (with its `having`, `select` and `orderBy`), and a walk `_agg` in `fields` or compared in `where`. `p` is a number from 0 to 1, so `p: 0.5` is the median; anything else is refused `agg_invalid`. The default interpolates between the two nearest values and answers a number. `nearest: true` answers a value that is in the rows, in the field's own type, so an int64 stays exact. Nulls are skipped, no values gives null, and an interpolated result that is not finite is null. It reads number and integer fields. The memory and Postgres datasets give the same answer. `docs/walks.md` describes it.
+- **An invite can name the kid its redeemer gets (#355).** `POST /substrate/v1/_system/invites` accepts `kid` (`<name>` or `<name>@<host>` of letters, digits, `.`, `_` and `-`, at most 128 characters) and `POST /substrate/v1/_system/register` gives the redeemer that kid. Minting or redeeming for a kid a live key holds answers `409 kid_already_live`, and a refused redeem leaves the invite unconsumed. `substrate federate enroll --kid <name@host>` mints one, and the TUI keys screen asks for a key name and shows a join token ready for `substrate federate join`. An invite without a kid behaves as before. Upgrade the server before minting a named invite: an older server ignores `kid` and hands out a random one.
+- **The ask completer shows each suggested value's row count (#351).** After `field:`, a suggestion reads `substrate  40 rows`. A count appears only when the whole type was read and the field stayed under the distinct cap. `NlPackValueRef` gains an optional `count`, so the pack's ETag now changes when a count changes.
+
+### Changed
+
+- **Row ids order and compare by code point on Postgres, as on memory (#352).** Postgres used the database collation, so client-supplied ids that differ in case or punctuation sorted and range-filtered differently on the two datasets. UUIDv7 ids were never affected. Every column that holds a row id is now `COLLATE "C"`.
+- **In `act`, a bare `field=` is null (#349).** On a nullable field it clears the field, and in `find` it is the is-null filter. On a field that is not nullable it is refused, where it used to store an empty string. `field=""` is still the empty string.
+- **The NL judge no longer drops a word that changes the question (#353).** A pick is refused, and the ask answers `unknown`, when a leftover word is an aggregate or unit word ("average", "daily"), names one of the picked type's fields, or sits right before the time expression ("due in 2026"). Some questions that used to return rows on a broader reading now answer `unknown`.
+- **`admin.invite` in `@mnmal-ai/substrate-client` returns `token` (#355)**, the join token for `substrate federate join`. The join-token module moved there from `apps/substrate`, which re-exports it from its old path.
+
+### Fixed
+
+- **Three `act` sketches a small model kept sending (#349).** `find Todo fields=id,title` is allowed, `? define` answers with how a define step is written, and `Todo.unblock #6` is refused with the nearest valid sketch, `unblock Todo #6`.
+
+### Upgrade
+
+- dataset-pg migration `0010t_id_collation` and recall migration `0005_row_id_collation` run at boot (#352). They rewrite no rows, but every index on a converted column is rebuilt under an exclusive lock on its table. On a large store, boot takes as long as those rebuilds, and each table is unavailable for reads and writes while its indexes rebuild.
+- `_system/Invite` gains the `kid` column at boot (#355).
+
+### Internal
+
+- `pg-dataset.ts` and the MCP `server.ts` are split by concern (#346, #347), and `<ns>/<Type>.<field>` is parsed in one place (#350).
+- The pre-merge run starts only the Postgres passes a PR's changes reach (#354).
+
 ## 1.0.0-beta.17 (2026-11-24)
 
 Changes since 1.0.0-beta.16. This release closes a guard bypass on mutate arrays, takes `fastembed` out of the ONNX embedder, and makes a revoke retire the kid's directory row.
