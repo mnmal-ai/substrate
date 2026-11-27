@@ -74,6 +74,8 @@ export interface ProposeNamespaceResolverDeps {
   proposeCapability?: string;
   /** Capability that writes to a proposal row's indexes need; see `proposeToWrite`. */
   indexCapability?: string;
+  /** Capability that removing a proposal record needs; see `defineProposalTypes`. */
+  dropCapability?: string;
   /** See InstallHotAddedNamespaceArgs.registerProposalMutations. */
   registerProposalMutations?: InstallHotAddedNamespaceArgs['registerProposalMutations'];
 }
@@ -230,6 +232,7 @@ async function proposeNamespaceLocked(
       edges: deps.edges,
       ...(deps.proposeCapability !== undefined && { proposeCapability: deps.proposeCapability }),
       ...(deps.indexCapability !== undefined && { indexCapability: deps.indexCapability }),
+      ...(deps.dropCapability !== undefined && { dropCapability: deps.dropCapability }),
       ...(deps.registerProposalMutations !== undefined && {
         registerProposalMutations: deps.registerProposalMutations
       })

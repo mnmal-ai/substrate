@@ -25,7 +25,9 @@ export const ProposalsBootstrapConfigSchema = z
   .object({
     ownedNamespaces: z.array(z.string().min(1)).default([]),
     proposeCapability: z.string().min(1).default('substrate.propose'),
-    indexCapability: z.string().min(1).default('substrate.index')
+    indexCapability: z.string().min(1).default('substrate.index'),
+    // Unset: the deployment's admin capability (`SUBSTRATE_ADMIN_CAPABILITY`), else 'admin'.
+    dropCapability: z.string().min(1).optional()
   })
   .strict();
 
@@ -38,8 +40,18 @@ export const bootstrap = defineBootstrap.coordinator({
       ownedNamespaces: config.ownedNamespaces,
       pubsub: createNoopPubSub(),
       proposeCapability: config.proposeCapability,
-      indexCapability: config.indexCapability
+      indexCapability: config.indexCapability,
+      ...dropCapabilityOf(config.dropCapability, process.env)
     })
 });
+
+/** The configured drop capability, else the env's admin capability when it names one. */
+export function dropCapabilityOf(
+  configured: string | undefined,
+  env: { SUBSTRATE_ADMIN_CAPABILITY?: string | undefined }
+): { dropCapability?: string } {
+  const named = configured ?? env.SUBSTRATE_ADMIN_CAPABILITY;
+  return named !== undefined && named.length > 0 ? { dropCapability: named } : {};
+}
 
 export default bootstrap;

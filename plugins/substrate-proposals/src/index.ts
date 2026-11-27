@@ -84,6 +84,7 @@ export function createProposalsPlugin(config: ProposalsPluginConfig): Coordinato
   const capability = config.proposeCapability ?? DEFAULT_PROPOSE_CAPABILITY;
   const policy = makeProposePolicy(capability);
   const indexCapability = config.indexCapability ?? DEFAULT_INDEX_CAPABILITY;
+  const dropCapability = config.dropCapability;
   const now = config.now ?? ((): Date => new Date());
   // Built from the ActionProposal records in onStart.
   let actionLayer: ProposalActionLayer | undefined;
@@ -140,7 +141,7 @@ export function createProposalsPlugin(config: ProposalsPluginConfig): Coordinato
         edges: ctx.edges
       });
       // An admin's archive vetoes or retires a word: this layer drops it, then peers are told.
-      defineControlPlaneTypes(registryStore, capability, undefined, async (row) => {
+      defineControlPlaneTypes(registryStore, capability, dropCapability, async (row) => {
         actionLayer?.apply(row);
         await config.pubsub.notify(ACTIONS_CHANNEL, String(row.id));
       }).install(ctx);
@@ -161,6 +162,7 @@ export function createProposalsPlugin(config: ProposalsPluginConfig): Coordinato
           pubsub: config.pubsub,
           proposeCapability: capability,
           indexCapability,
+          ...(dropCapability !== undefined && { dropCapability }),
           registerProposalMutations
         }),
         policy
@@ -201,7 +203,9 @@ export function createProposalsPlugin(config: ProposalsPluginConfig): Coordinato
         registryStore.set(ns, { registry: ctx.registry, dataset: ctx.dataset, edges: ctx.edges });
 
         // Register TypeProposal + FieldProposal autoCRUD types.
-        defineProposalTypes(ns, registryStore, capability, indexCapability).install(ctx);
+        defineProposalTypes(ns, registryStore, capability, indexCapability, dropCapability).install(
+          ctx
+        );
 
         // Register propose_type + propose_field mutations via the shared
         // helper (single-source with the hot-add path).
@@ -271,6 +275,7 @@ export function createProposalsPlugin(config: ProposalsPluginConfig): Coordinato
         edges: controlBinding.edges,
         proposeCapability: capability,
         indexCapability,
+        ...(dropCapability !== undefined && { dropCapability }),
         registerProposalMutations,
         onSkip: (row, err) => {
           ctx.metric('_system_proposals.replay_skipped', {
@@ -380,6 +385,7 @@ export function createProposalsPlugin(config: ProposalsPluginConfig): Coordinato
         metric: ctx.metric,
         proposeCapability: capability,
         indexCapability,
+        ...(dropCapability !== undefined && { dropCapability }),
         registerProposalMutations
       });
     },

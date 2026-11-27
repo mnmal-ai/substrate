@@ -11,7 +11,7 @@
 
 import { BootstrapConfigError } from '@mnmal-ai/substrate-bootstrap';
 import { describe, expect, it } from 'vitest';
-import { bootstrap } from '../src/bootstrap.js';
+import { bootstrap, dropCapabilityOf } from '../src/bootstrap.js';
 import { CONTROL_NAMESPACE } from '../src/control-plane.js';
 
 describe('bootstrap — namespace install', () => {
@@ -29,6 +29,19 @@ describe('bootstrap — namespace install', () => {
 
   it('propagates the reserved-namespace check from createProposalsPlugin', () => {
     expect(() => bootstrap({ ownedNamespaces: [CONTROL_NAMESPACE] })).toThrow(/reserved/i);
+  });
+});
+
+describe('bootstrap — drop capability', () => {
+  it("is the configured name, else the env's admin capability, else unset", () => {
+    expect(dropCapabilityOf('root', { SUBSTRATE_ADMIN_CAPABILITY: 'ops' })).toEqual({
+      dropCapability: 'root'
+    });
+    expect(dropCapabilityOf(undefined, { SUBSTRATE_ADMIN_CAPABILITY: 'ops' })).toEqual({
+      dropCapability: 'ops'
+    });
+    expect(dropCapabilityOf(undefined, { SUBSTRATE_ADMIN_CAPABILITY: '' })).toEqual({});
+    expect(dropCapabilityOf(undefined, {})).toEqual({});
   });
 });
 

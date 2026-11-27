@@ -61,6 +61,12 @@ export interface ProposalsPluginConfig {
   indexCapability?: string;
 
   /**
+   * Capability name that removing a proposal record needs, in the namespace it
+   * changes: the deployment's admin capability. Defaults to `'admin'`.
+   */
+  dropCapability?: string;
+
+  /**
    * Lookup function the `propose_namespace` resolver uses to find the dataset
    * for a hot-added namespace. The host (typically the substrate binary) wires
    * this to its dataset registry. Returning `undefined` causes the resolver

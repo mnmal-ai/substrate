@@ -9,6 +9,7 @@ import { MemoryDataset, MemoryDatasetRegistry } from '@mnmal-ai/substrate-datase
 import type { RequestContext, ResolverArgs } from '@mnmal-ai/substrate-types';
 import { describe, expect, it } from 'vitest';
 import { createNoopPubSub, createProposalsPlugin } from '../src/index.js';
+import { skipLine } from '../src/multi-instance.js';
 
 const T0 = new Date('2026-05-06T00:00:00Z');
 const T1 = new Date('2026-05-07T00:00:00Z');
@@ -32,7 +33,8 @@ function row(
 async function boot(
   dataset: MemoryDataset,
   control = new MemoryDataset({ namespace: '_system_proposals' }),
-  more: MemoryDataset[] = []
+  more: MemoryDataset[] = [],
+  config: { dropCapability?: string; log?: (line: string) => void } = {}
 ) {
   const datasets = new MemoryDatasetRegistry();
   datasets.set('app', dataset);
@@ -43,7 +45,8 @@ async function boot(
   const plugin = createProposalsPlugin({
     ownedNamespaces: ['app'],
     pubsub: createNoopPubSub(),
-    datasetFor: (ns) => datasets.get(ns)
+    datasetFor: (ns) => datasets.get(ns),
+    ...config
   });
   const edges = new MemoryEdgesStore({ now: () => T0 });
   const loaded = await loadPlugins({
@@ -207,6 +210,34 @@ describe('proposal records', () => {
     ]);
     const { engine } = await boot(new MemoryDataset({ namespace: 'app' }), control);
     expect(engine.registryFor('a/b')).toBeUndefined();
+  });
+
+  it('warn when replay skips one for a missing dataset or an unregistered type', async () => {
+    const control = new MemoryDataset({ namespace: '_system_proposals' });
+    await control.write('NamespaceProposal', [row({ id: 'gone', ns: 'nowhere' })]);
+    const ds = new MemoryDataset({ namespace: 'app' });
+    await ds.write('FieldProposal', [
+      row({
+        id: 'orphan',
+        targetType: 'Missing',
+        fieldName: 'f',
+        fieldSpecJson: '{"kind":"scalar","type":"string"}'
+      })
+    ]);
+    const lines: string[] = [];
+    await boot(ds, control, [], { log: (line) => lines.push(line) });
+    expect(lines.some((l) => l.includes("'nowhere' has no dataset on this host"))).toBe(true);
+    expect(lines.some((l) => l.includes("type 'Missing' is not registered"))).toBe(true);
+  });
+
+  it('print a skipped name on one line, whatever it holds', () => {
+    const line = skipLine(
+      'app',
+      { id: 'x', typeName: 'A\nforged: line\u2028x' },
+      new Error('bad\r\n')
+    );
+    expect(line).not.toMatch(/[\n\r\u2028]/);
+    expect(line).toContain('A\\u000aforged: line\\u2028x');
   });
 
   it('do not stop the boot when one is malformed', async () => {
@@ -858,6 +889,35 @@ describe('removing a NamespaceProposal', () => {
       });
       const inHome = as({ '*': propose, home: ['admin'] });
       expect((await run(engine, key, params, inHome)).errors, key).toBeUndefined();
+    }
+  });
+
+  it('needs the configured drop capability when the deployment renames it', async () => {
+    const control = new MemoryDataset({ namespace: '_system_proposals' });
+    await control.write('NamespaceProposal', [row({ id: 'np', ns: 'home' })]);
+    const home = new MemoryDataset({ namespace: 'home' });
+    await home.write('TypeProposal', [row({ id: 'tp', typeName: 'Note', fieldsJson: str })]);
+    await home.write('Note', [{ id: 'n1', t: 'x' }]);
+    const { engine } = await boot(new MemoryDataset({ namespace: 'app' }), control, [home], {
+      dropCapability: 'root'
+    });
+    const key = '_system_proposals/deleteNamespaceProposal';
+    const admin = as({ '*': propose, home: ['admin'] });
+    expect((await run(engine, key, { id: 'np' }, admin)).errors?.[0]?.code).toBe('policy_denied');
+    const root = as({ '*': propose, home: ['root'] });
+    expect((await run(engine, key, { id: 'np' }, root)).errors).toBeUndefined();
+  });
+
+  it('refuses a name that is not a string, on create and on update', async () => {
+    const { engine } = await seeded(false);
+    const all = as({ '*': [...propose, 'admin'] });
+    for (const [key, params] of [
+      ['_system_proposals/createNamespaceProposal', { ns: 5 }],
+      ['_system_proposals/updateNamespaceProposal', { id: 'np', ns: ['home'] }]
+    ] as Array<[string, Record<string, unknown>]>) {
+      expect((await run(engine, key, params, all)).errors?.[0]?.code, key).toBe(
+        'invalid_namespace'
+      );
     }
   });
 
