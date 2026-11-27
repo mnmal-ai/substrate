@@ -20,6 +20,7 @@
 
 import { field } from '@mnmal-ai/substrate-sdk';
 import type { FieldDef, IndexDecl } from '@mnmal-ai/substrate-types';
+import { uuidFromName } from '../name-uuid.js';
 
 export const KEY_FIELDS: Record<string, FieldDef> = {
   // The principal identity an agent signs with (JWT `kid`). Indexed so the
@@ -172,6 +173,14 @@ export { SYSTEM_NAMESPACE } from '@mnmal-ai/substrate-policy';
 /** Canonical type names — used by install/registry/tests. */
 export const KEY_TYPE = 'Key';
 export const INVITE_TYPE = 'Invite';
+/**
+ * An invite's row id: a UUID derived from its code, so the row passes the
+ * `rows_id_uuid_format` CHECK that `SUBSTRATE_ENFORCE_UUID_CHECK` installs and
+ * the code itself, a bearer secret, is never stored.
+ */
+export function inviteRowId(code: string): string {
+  return uuidFromName(`invite:${code}`);
+}
 export const ENUM_VERDICT_TYPE = 'EnumCheckVerdict';
 
 /**

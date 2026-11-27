@@ -71,7 +71,7 @@ describe('FastifySubstrateServer HTTP', () => {
       shapes: {},
       errors: [
         {
-          message: 'internal server error',
+          message: 'internal server error; the cause is in the server log',
           code: 'internal_error'
         }
       ]
