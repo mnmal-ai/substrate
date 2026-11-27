@@ -63,8 +63,11 @@ export async function lockedRow(
  * row the array names, in id order as writes lock rows, then runs each
  * element through `resolver` in turn, naming the row it locked by its stored
  * id. Each element's own check finds its row already locked, so two arrays
- * naming the same rows in different orders queue rather than deadlock. Where
- * the dataset takes no row locks, the elements' own checks decide.
+ * naming the same rows in different orders queue rather than deadlock. A
+ * writer that takes a name lock an element then waits on, while it waits on
+ * one of these rows, still deadlocks; the store aborts one of the two, which
+ * is refused `write_conflict`. Where the dataset takes no row locks, the
+ * elements' own checks decide.
  *
  * @throws BatchElementError naming the element `resolver` refused
  */

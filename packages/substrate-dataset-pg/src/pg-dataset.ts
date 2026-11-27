@@ -55,7 +55,13 @@ import type {
   WriteResult,
   WriteRow
 } from '@mnmal-ai/substrate-types';
-import { assertNoRepeatedIds, ResolverFrameError, STORE_BUSY } from '@mnmal-ai/substrate-types';
+import {
+  assertNoRepeatedIds,
+  isBatchElementError,
+  ResolverFrameError,
+  STORE_BUSY,
+  WRITE_CONFLICT
+} from '@mnmal-ai/substrate-types';
 import type { Sql, TransactionSql } from 'postgres';
 import { withPgAdvisoryLock } from './advisory-lock.js';
 import type { DiskGuard } from './disk-guard.js';
@@ -1358,11 +1364,27 @@ function storeBusy(err: unknown): ResolverFrameError | null {
   );
 }
 
-/** Awaits `p`, rethrowing a `QUEUE_TIMEOUT` as `store_busy`. */
+/**
+ * Postgres aborting the transaction to break a deadlock (40P01) or a
+ * serialization conflict (40001) as `write_conflict`, else null; thrown
+ * directly or as a batch element's cause. The transaction rolled back, so a
+ * retry is safe.
+ */
+function writeConflict(err: unknown): ResolverFrameError | null {
+  const cause = isBatchElementError(err) ? err.cause : err;
+  const code = (cause as { code?: unknown } | null)?.code;
+  if (code !== '40P01' && code !== '40001') return null;
+  return new ResolverFrameError(
+    WRITE_CONFLICT,
+    'the write conflicted with a concurrent write and was rolled back; retry it'
+  );
+}
+
+/** Awaits a transaction, rethrowing a `QUEUE_TIMEOUT` as `store_busy` and an abort by Postgres as `write_conflict`. */
 async function busyAware<T>(p: Promise<T>): Promise<T> {
   try {
     return await p;
   } catch (err) {
-    throw storeBusy(err) ?? err;
+    throw storeBusy(err) ?? writeConflict(err) ?? err;
   }
 }

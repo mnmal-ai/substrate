@@ -385,10 +385,15 @@ export class ArrayDispatch {
           addError(envelope, e.path ?? [key], e.message, e.code);
         }
       }
+      // A store refusal thrown out of the transaction is written for callers too.
+      const storeRefusal = isResolverFrameError(frameError) ? frameError : undefined;
+      if (storeRefusal !== undefined) {
+        addError(envelope, [key], storeRefusal.message, storeRefusal.code, storeRefusal.details);
+      }
       addError(
         envelope,
         failedIndex !== undefined ? [key, String(failedIndex)] : [key],
-        `batched mutate at '${key}'${atSuffix} rolled back: ${frameError instanceof BatchedFrameRefusal ? frameError.message : 'internal error'}`,
+        `batched mutate at '${key}'${atSuffix} rolled back: ${frameError instanceof BatchedFrameRefusal || storeRefusal !== undefined ? frameError.message : 'internal error'}`,
         'batched_frame_rolled_back'
       );
       this.#metric('engine_batched_frame_rolled_back', {

@@ -19,6 +19,7 @@ import type {
   RequestContext,
   WriteEvent
 } from '@mnmal-ai/substrate-types';
+import { isResolverFrameError } from '@mnmal-ai/substrate-types';
 import type { ArrayDispatch } from './batch.js';
 import type { BridgeSubsystem } from './bridge.js';
 import { actorOf, type CommittedWritesQueue } from './committed-writes.js';
@@ -403,6 +404,21 @@ export class MutateDispatch {
       }
       committed = true;
     } catch (err) {
+      // A store refusal thrown out of the transaction (a deadlock it broke, no
+      // free connection) is written for callers: every key that did not stand
+      // on its own carries its code.
+      if (isResolverFrameError(err)) {
+        for (const key of singleFrameKeys) {
+          const ns = parsedByKey.get(key)?.ns;
+          const virtual = ns !== undefined && this.#namespaces.get(ns)?.virtual === true;
+          if (virtual && key in envelope.data) continue;
+          delete envelope.data[key];
+          delete envelope.shapes[key];
+          addError(envelope, [key], err.message, err.code, err.details);
+        }
+        this.#metric('engine_frame_rolled_back', { code: err.code });
+        return;
+      }
       if (!(err instanceof SharedTxRefusal)) throw err;
       for (const key of singleFrameKeys) {
         const ns = parsedByKey.get(key)?.ns;
