@@ -169,6 +169,44 @@ const mustAgree: Array<[string, string, ReadParams, Expected]> = [
     ['c1', 'c2']
   ],
   [
+    'pick latest among the rows at or before a date on the seed row',
+    'Listing',
+    {
+      where: {
+        _walk: {
+          out: 'cert',
+          where: obs(
+            { price: { eq: 90 } },
+            {
+              pick: { latest: 'observedAt' },
+              among: { observedAt: { lte: { $ref: '$.firstSeen' } } }
+            }
+          )
+        }
+      } as unknown as WhereClause
+    },
+    ['l1']
+  ],
+  [
+    'a seed row with no far row at or before its date picks none',
+    'Listing',
+    {
+      where: {
+        _walk: {
+          out: 'cert',
+          where: obs(
+            { price: { gte: 0 } },
+            {
+              pick: { latest: 'observedAt' },
+              among: { observedAt: { lte: { $ref: '$.firstSeen' } } }
+            }
+          )
+        }
+      } as unknown as WhereClause
+    },
+    ['l1', 'l2a']
+  ],
+  [
     '$ref to the seed, times',
     'Cert',
     { where: obs({ price: { gte: { $ref: '$.ask', times: 1.25 } } }) },

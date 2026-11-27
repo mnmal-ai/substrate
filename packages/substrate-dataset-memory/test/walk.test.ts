@@ -1187,3 +1187,37 @@ describe('percentile aggregate in memory', () => {
     expect(kept.groups).toEqual([{ s: 'a', mid: 200 }]);
   });
 });
+
+describe('pick as of a date on the seed row', () => {
+  it('picks the latest far row at or before the date, never a later one', async () => {
+    const ds = await dataset({
+      Cert: [{ id: 'c1' }, { id: 'c2' }],
+      Listing: [
+        { id: 'sale', cert: 'c1', firstSeen: '2026-10-20T00:00:00Z' },
+        { id: 'early', cert: 'c1', firstSeen: '2026-10-01T00:00:00Z' },
+        { id: 'other', cert: 'c2', firstSeen: '2026-10-20T00:00:00Z' }
+      ],
+      Observation: [
+        { id: 'o1', cert: 'c1', price: 90, observedAt: '2026-10-10T00:00:00Z' },
+        { id: 'o2', cert: 'c1', price: 110, observedAt: '2026-10-20T00:00:00Z' },
+        { id: 'o3', cert: 'c1', price: 130, observedAt: '2026-10-25T00:00:00Z' },
+        { id: 'o4', cert: 'c2', price: 70, observedAt: '2026-10-21T00:00:00Z' }
+      ]
+    });
+    const asOf = (where: WhereClause): WhereClause =>
+      ({
+        _walk: {
+          out: 'cert',
+          where: obs(where, {
+            pick: { latest: 'observedAt' },
+            among: { observedAt: { lte: { $ref: '$.firstSeen' } } }
+          })
+        }
+      }) as unknown as WhereClause;
+    // The sale sees the offer of its own instant, not the later one.
+    expect(await ids(ds, 'Listing', asOf({ price: { eq: 110 } }))).toEqual(['sale']);
+    expect(await ids(ds, 'Listing', asOf({ price: { eq: 130 } }))).toEqual([]);
+    // No offer at or before the date: nothing is picked.
+    expect(await ids(ds, 'Listing', asOf({ price: { gte: 0 } }))).toEqual(['sale']);
+  });
+});
