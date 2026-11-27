@@ -517,7 +517,25 @@ export interface FrameHelpers {
   validateOrderBy: (orderBy: unknown, fields: Record<string, FieldDef>, path: string[]) => void;
 }
 
-const AGG_FNS = new Set(['count', 'avg', 'sum', 'min', 'max', 'latest']);
+const AGG_FNS = new Set(['count', 'avg', 'sum', 'min', 'max', 'latest', 'percentile']);
+
+/** A percentile argument's shape: `{ value, p, nearest? }` with `p` from 0 to 1. Returns it narrowed. */
+function percentileArg(v: unknown, at: string[]): { value: unknown; nearest: boolean } {
+  if (!isObj(v) || Object.keys(v).some((k) => k !== 'value' && k !== 'p' && k !== 'nearest')) {
+    fail(
+      'agg_invalid',
+      'percentile takes { value: <field>, p: <0 to 1>, nearest?: <boolean> }',
+      at
+    );
+  }
+  if (typeof v.p !== 'number' || !(v.p >= 0 && v.p <= 1)) {
+    fail('agg_invalid', 'percentile p is a number from 0 to 1', [...at, 'p']);
+  }
+  if (v.nearest !== undefined && typeof v.nearest !== 'boolean') {
+    fail('agg_invalid', 'percentile nearest is true or false', [...at, 'nearest']);
+  }
+  return { value: v.value, nearest: v.nearest === true };
+}
 const WALK_AGG_KEYS = new Set(['in', 'out', 'where']);
 
 /**
@@ -542,7 +560,7 @@ function aggKind(
   if (fns.length !== 1) {
     fail(
       'agg_invalid',
-      'an aggregate names exactly one of count, avg, sum, min, max or latest',
+      'an aggregate names exactly one of count, avg, sum, min, max, latest or percentile',
       path
     );
   }
@@ -580,6 +598,16 @@ function aggKind(
         (k) => DATE_OR_NUMBER.has(k as FieldKind) || INTEGERS.has(k as FieldKind),
         'a number, integer or date field'
       );
+    case 'percentile': {
+      const arg = percentileArg(v, at);
+      const kind = field(
+        arg.value,
+        [...at, 'value'],
+        (k) => k === 'scalar.number' || INTEGERS.has(k as FieldKind),
+        'a number or integer field'
+      );
+      return arg.nearest ? kind : 'scalar.number';
+    }
     default: {
       if (!isObj(v) || Object.keys(v).some((k) => k !== 'by' && k !== 'value')) {
         fail('agg_invalid', 'latest takes { by: <dateField>, value: <field> }', at);
@@ -998,7 +1026,7 @@ export function validateFrameParams(
   return { selected: new Set([...selected, ...outputs.keys()]) };
 }
 
-const FRAME_AGG_FNS = ['count', 'countDistinct', 'avg', 'sum', 'min', 'max'];
+const FRAME_AGG_FNS = ['count', 'countDistinct', 'avg', 'sum', 'min', 'max', 'percentile'];
 
 /** A frame aggregate: one function over an expression (`count: true` counts rows). Returns its value type. */
 function frameAggType(agg: Record<string, unknown>, scope: WalkScope, path: string[]): ExprType {
@@ -1006,7 +1034,7 @@ function frameAggType(agg: Record<string, unknown>, scope: WalkScope, path: stri
     if (k === 'latest') {
       fail(
         'agg_invalid',
-        'latest picks one row per seed row; a frame aggregate takes count, countDistinct, avg, sum, min or max',
+        'latest picks one row per seed row; a frame aggregate takes count, countDistinct, avg, sum, min, max or percentile',
         [...path, k]
       );
     }
@@ -1016,13 +1044,24 @@ function frameAggType(agg: Record<string, unknown>, scope: WalkScope, path: stri
   if (Object.keys(agg).length !== 1) {
     fail(
       'agg_invalid',
-      'an aggregate names exactly one of count, countDistinct, avg, sum, min or max',
+      'an aggregate names exactly one of count, countDistinct, avg, sum, min, max or percentile',
       path
     );
   }
   const [fn] = Object.keys(agg) as [string];
   const at = [...path, fn];
   if (fn === 'count' && agg.count === true) return 'number';
+  if (fn === 'percentile') {
+    const pa = percentileArg(agg.percentile, at);
+    const pt = checkFrameExpr(pa.value, scope, false, [...at, 'value']);
+    if (pt !== 'number' && pt !== 'int64') {
+      fail('agg_invalid', `percentile needs number, int64; the argument is ${pt}`, [
+        ...at,
+        'value'
+      ]);
+    }
+    return pa.nearest ? pt : 'number';
+  }
   const arg = agg[fn];
   if (
     fn === 'count' &&

@@ -1619,3 +1619,57 @@ describe('extension operators and walks', () => {
     expect(r.path.at(-1)).toBe('similarTo');
   });
 });
+
+describe('percentile aggregate', () => {
+  const OBS = 'cards/Observation.cert';
+  const walkAgg = (percentile: unknown) => ({ fields: { _agg: { a: { in: OBS, percentile } } } });
+  const frameAgg = (percentile: unknown) =>
+    ({ aggregate: { m: { percentile } } }) as unknown as Frame;
+
+  it('is accepted as a walk _agg, in fields and compared in where', () => {
+    expect(() => checkFrame(walkAgg({ value: 'price', p: 0.5 }) as Frame)).not.toThrow();
+    expect(() => checkFrame(walkAgg({ value: 'qty', p: 1, nearest: true }) as Frame)).not.toThrow();
+    expect(() =>
+      check({ _agg: { in: OBS, percentile: { value: 'price', p: 0.9 } }, gte: 120 })
+    ).not.toThrow();
+    expect(
+      refusal({ _agg: { in: OBS, percentile: { value: 'price', p: 0.9 } }, gte: 'x' }).code
+    ).toBe('type_mismatch');
+  });
+
+  it('is accepted as a frame aggregate, grouped, in having and orderBy', () => {
+    expect(() => checkFrame(frameAgg({ value: 'price', p: 0.9 }), 'Observation')).not.toThrow();
+    expect(() =>
+      checkFrame(
+        {
+          aggregate: { m: { percentile: { value: 'qty', p: 0.5, nearest: true } } },
+          groupBy: { bucket: { dateTrunc: [{ lit: 'day' }, 'observedAt'] } },
+          having: { gt: ['m', 1] },
+          orderBy: [{ m: 'desc' }]
+        } as unknown as Frame,
+        'Observation'
+      )
+    ).not.toThrow();
+  });
+
+  it.each([
+    ['p above 1', { value: 'price', p: 1.5 }],
+    ['p below 0', { value: 'price', p: -0.1 }],
+    ['p not a number', { value: 'price', p: Number.NaN }],
+    ['p a string', { value: 'price', p: '0.5' }],
+    ['p missing', { value: 'price' }],
+    ['a date field', { value: 'observedAt', p: 0.5 }],
+    ['an extra key', { value: 'price', p: 0.5, q: 1 }],
+    ['nearest not a boolean', { value: 'price', p: 0.5, nearest: 'yes' }],
+    ['not an object', 'price']
+  ])('refuses %s on both forms', (_name, arg) => {
+    expect(frameRefusal(walkAgg(arg) as Frame).code).toBe('agg_invalid');
+    expect(frameRefusal(frameAgg(arg), 'Observation').code).toBe('agg_invalid');
+  });
+
+  it('names the range when p is out of it', () => {
+    expect(() => checkFrame(frameAgg({ value: 'price', p: 2 }), 'Observation')).toThrow(
+      'percentile p is a number from 0 to 1'
+    );
+  });
+});

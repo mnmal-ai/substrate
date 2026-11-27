@@ -119,13 +119,21 @@ export interface RefOperand {
   plus?: number;
 }
 
+/** A percentile's argument: `p` from 0 to 1; `nearest` returns a value that occurs instead of interpolating. */
+export interface PercentileArg<V> {
+  value: V;
+  p: number;
+  nearest?: boolean;
+}
+
 export type AggFn =
   | { count: true }
   | { avg: string }
   | { sum: string }
   | { min: string }
   | { max: string }
-  | { latest: { by: string; value: string } };
+  | { latest: { by: string; value: string } }
+  | { percentile: PercentileArg<string> };
 
 export type WalkAgg = { in?: string; out?: string; where?: WhereClause } & AggFn;
 
@@ -136,7 +144,8 @@ export type FrameAgg =
   | { avg: Expr }
   | { sum: Expr }
   | { min: Expr }
-  | { max: Expr };
+  | { max: Expr }
+  | { percentile: PercentileArg<Expr> };
 
 export interface NestedSelection {
   _walk: { in?: string; out?: string; where?: WhereClause };
