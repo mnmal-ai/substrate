@@ -370,21 +370,21 @@ describe('/keys layout in the frame', () => {
     const b = lines.findIndex((l) => l.includes('── B'));
     expect(lines[b - 1]?.trim()).toBe('');
     expect(lines[b - 2]).toMatch(/b\s+journal/);
-    expect(lines[1]).toContain('── A');
+    expect(lines[2]).toContain('── A');
     app.unmount();
   });
 
   it('the selected row reaches the panel content width, and no line exceeds it', async () => {
-    // At 100 columns the panel draws 98 cells after its one-cell inset: a line ends by column 99.
+    // At 100 columns the panel draws 96 cells after its two-cell inset: a line ends by column 98.
     const long = `${'n'.repeat(60)}:read,${'m'.repeat(60)}:read`;
     const app = start({ keys: async () => [row('a@A', long), row('b@A', long)] }, marathon, 100);
     await open(app);
     const lines = app.frame().split('\n');
-    for (const l of lines) expect(l.length).toBeLessThanOrEqual(99);
+    for (const l of lines) expect(l.length).toBeLessThanOrEqual(98);
     const at = lines.findIndex((l) => l.includes('▶'));
-    expect(lines[at]).toHaveLength(99);
+    expect(lines[at]).toHaveLength(98);
     expect(lines[at]?.endsWith('…')).toBe(true);
-    expect(lines[at + 1]).toHaveLength(99);
+    expect(lines[at + 1]).toHaveLength(98);
     app.unmount();
   });
 });

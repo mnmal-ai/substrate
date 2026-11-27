@@ -156,6 +156,11 @@ describe('the grant editor', () => {
     expect(f).toMatch(/namespace\s+r\s+m\s+a/);
     expect(f).toContain('recall');
     expect(f).toContain('before journal:r+m,plane:r');
+    // A blank row sits between the title and the column headings.
+    const lines = f.split('\n');
+    const title = lines.findIndex((l) => l.includes('a-agent@Box · editing'));
+    expect(lines[title + 1]?.trim()).toBe('');
+    expect(lines[title + 2]).toMatch(/namespace\s+r\s+m\s+a/);
     app.unmount();
   });
 

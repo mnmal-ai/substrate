@@ -109,18 +109,24 @@ export function readInviteKid(text: string): { kid?: string } | { error: string 
 
 const NS_NAME = /^(\*|[A-Za-z0-9_.-]+)$/;
 
-/** A panel line: plain, or a refusal that renders in the theme's error tone. */
-export type Line = string | { readonly error: string };
+/** A panel line: plain, a refusal that renders in the theme's error tone, or a bold heading. */
+export type Line = string | { readonly error: string } | { readonly bold: string };
 const refusal = (text: string): Line => ({ error: text });
 
-/** As the shared toned lines: a refusal in the error tone, anything else untoned. */
+/** As the shared toned lines: a refusal in the error tone, a heading bold, anything else untoned. */
 const toned = (lines: readonly Line[]): Toned[] =>
-  lines.map((l) => (typeof l === 'string' ? { text: l } : { text: l.error, tone: 'error' }));
+  lines.map((l) =>
+    typeof l === 'string'
+      ? { text: l }
+      : 'error' in l
+        ? { text: l.error, tone: 'error' }
+        : { text: l.bold, parts: [{ text: l.bold, bold: true }] }
+  );
 
 function promptView(s: PromptState, glyph: { title: string }): Line[] {
   return [
     `${glyph.title} keys › ${sanitise(s.label)}`,
-    ...(s.kid !== undefined ? [`  ${sanitise(s.kid)}`] : []),
+    ...(s.kid !== undefined ? [{ bold: `  ${sanitise(s.kid)}` }] : []),
     ...(s.algorithm !== undefined && s.fingerprint !== undefined
       ? [`  ${s.algorithm} · ${s.fingerprint}`]
       : []),
@@ -326,7 +332,8 @@ function reviewView(
       break;
   }
   const head = fit(`${glyph.title} keys › ${target} · review`);
-  const fitLine = (l: Line): Line => (typeof l === 'string' ? fit(l) : refusal(fit(l.error)));
+  const fitLine = (l: Line): Line =>
+    typeof l === 'string' ? fit(l) : 'error' in l ? refusal(fit(l.error)) : { bold: fit(l.bold) };
   return [
     head,
     ...body.map(fit),
@@ -430,7 +437,7 @@ function editView(
     Math.max('namespace'.length, ...m.rows.map((ns) => label(ns).length)) + 2
   );
   const granted = result(m);
-  const visible = Math.max(1, size.rows - 6);
+  const visible = Math.max(1, size.rows - 7);
   const start = Math.max(0, Math.min(m.row - visible + 1, m.rows.length - visible));
   const grid = m.rows.slice(start, start + visible).map((ns, k) => {
     const at = start + k === m.row;
@@ -461,7 +468,9 @@ function editView(
         : [];
   return [
     fit(`${glyph.title} keys › ${subject} · editing`),
-    fit(`  ${'namespace'.padEnd(nsW)} r   m   a`),
+    // A space, not '': ink gives an empty text no row.
+    ' ',
+    { bold: fit(`  ${'namespace'.padEnd(nsW)} r   m   a`) },
     ...grid,
     fit(`  before ${before}`),
     fit(`  after  ${grantLine(granted)}`),
@@ -470,8 +479,8 @@ function editView(
   ];
 }
 
-/** Every keys panel: a one-column inset on a raised ground, set apart from the input band. */
-export const KEYS_CHROME = { inset: { x: 1, y: 0 }, ground: marathon.color.raised } as const;
+/** Every keys panel: two columns and one row of inset on a raised ground, set apart from the input band. */
+export const KEYS_CHROME = { inset: { x: 2, y: 1 }, ground: marathon.color.raised } as const;
 
 export function editorPanels(deps: TuiDeps): {
   [K in keyof EditorPanels]: PanelDef<EditorPanels[K], KeysPanels>;
