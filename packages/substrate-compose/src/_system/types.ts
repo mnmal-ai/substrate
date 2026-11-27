@@ -61,7 +61,9 @@ export const INVITE_FIELDS: Record<string, FieldDef> = {
   // Nullable — stays null until the invite is consumed.
   consumedAt: field.date({ nullable: true }),
   // kid of the resulting Key.
-  consumedBy: field.string({ nullable: true })
+  consumedBy: field.string({ nullable: true }),
+  // The kid the redeemed key gets; null for a random one.
+  kid: field.string({ nullable: true })
 };
 
 /**

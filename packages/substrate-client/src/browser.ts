@@ -25,6 +25,12 @@ export type {
   AdminUpdateResult
 } from './admin/api.js';
 export {
+  decodeJoinToken,
+  encodeJoinToken,
+  JoinTokenError,
+  type JoinTokenPayload
+} from './admin/join-token.js';
+export {
   CURRENT_MARK,
   currentStep,
   ONBOARD_STEPS,

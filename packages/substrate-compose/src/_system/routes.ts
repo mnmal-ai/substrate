@@ -24,5 +24,6 @@ export { registerRoute } from './routes/register.js';
 export {
   extractClientIp,
   type KeysRouteOptions,
+  kidProblem,
   type RegisterAlgorithm
 } from './routes/shared.js';

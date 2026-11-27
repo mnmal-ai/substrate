@@ -67,6 +67,7 @@ export {
   type KeysRouteOptions,
   keyPatchRoute,
   keysRoute,
+  kidProblem,
   registerRoute
 } from './routes.js';
 export {

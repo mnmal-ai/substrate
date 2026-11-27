@@ -1,6 +1,7 @@
 /** The admin-gated routes, typed. Each call needs an identity whose grant confers `admin`. */
 
 import type { HttpTransport } from '../transport/http.js';
+import { encodeJoinToken } from './join-token.js';
 import { createSurgeryApi, type SurgeryApi } from './surgery.js';
 
 export interface AdminKeyRow {
@@ -84,6 +85,8 @@ export interface AdminInviteInput {
   readonly capabilities: readonly string[];
   /** Omitted: the server's default TTL. */
   readonly ttlMs?: number;
+  /** The kid the redeemed key gets. Omitted: the server picks a random one. */
+  readonly kid?: string;
 }
 
 export interface AdminInviteResult {
@@ -92,6 +95,10 @@ export interface AdminInviteResult {
   readonly expiresAt: string;
   readonly namespaces: string[];
   readonly capabilities: string[];
+  /** The kid the invite names, when it names one. */
+  readonly kid?: string;
+  /** The code as a join token for this client's origin: what `substrate federate join` takes. As secret as the code. */
+  readonly token: string;
 }
 
 export interface AdminApi extends SurgeryApi {
@@ -191,12 +198,17 @@ export function createAdminApi(t: HttpTransport): AdminApi {
         capabilities: [...input.capabilities]
       };
       if (input.ttlMs !== undefined) body.ttlMs = input.ttlMs;
+      if (input.kid !== undefined) body.kid = input.kid;
       const res = await t.raw('/substrate/v1/_system/invites', {
         method: 'POST',
         body,
         ...(opts.signal !== undefined ? { signal: opts.signal } : {})
       });
-      return (await res.json()) as AdminInviteResult;
+      const out = (await res.json()) as Omit<AdminInviteResult, 'token'>;
+      return {
+        ...out,
+        token: encodeJoinToken({ origin: new URL(t.endpoint).origin, code: out.code })
+      };
     }
   };
 }

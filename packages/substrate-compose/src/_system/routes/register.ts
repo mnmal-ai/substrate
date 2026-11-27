@@ -161,8 +161,21 @@ export function registerRoute(
       });
     }
 
-    // 16 random bytes → a 22-char base64url kid; collisions are negligible.
-    const kid = base64Url(randomBytes(16));
+    // A named invite's kid, set by the operator at mint; the request body never chooses it.
+    // Otherwise 16 random bytes → a 22-char base64url kid; collisions are negligible.
+    const named = typeof invite.kid === 'string' && invite.kid.length > 0 ? invite.kid : null;
+    const kid = named ?? base64Url(randomBytes(16));
+    const kidLive = async (ds: Dataset): Promise<boolean> =>
+      (await ds.read(KEY_TYPE, { where: { kid: { eq: kid } } })).rows.some(
+        (r) => r.revokedAt == null
+      );
+    const kidTaken = (): SubstrateResponse =>
+      jsonResponse(409, {
+        code: 'kid_already_live',
+        message: `this invite is for kid '${kid}', which is already registered and live — the operator must revoke that key, or mint an invite for another kid`
+      });
+    // Refused before the invite is consumed, so it redeems once the kid is free.
+    if (named !== null && (await kidLive(dataset))) return kidTaken();
     const createdAt = now();
 
     const inviteNamespacesRaw = invite.namespaces;
@@ -185,6 +198,9 @@ export function registerRoute(
         if (!consumed.matched) {
           throw new RegisterRaceError();
         }
+        // Two invites can name one kid. Memory runs a transaction body in one piece, so
+        // this read is the guard there; pg's live-kid unique index refuses the write below.
+        if (named !== null && (await kidLive(tx))) throw new KidTakenError();
 
         // Raw dataset write, bypassing the admin policy on `createKey`
         // by design: the invite is the access control. `{ identity, now }`
@@ -194,7 +210,7 @@ export function registerRoute(
           [
             {
               kid,
-              name: body.keyName,
+              name: named ?? body.keyName,
               algorithm: body.algorithm,
               publicKey: body.publicKey,
               namespaces: inviteNamespaces,
@@ -229,6 +245,12 @@ export function registerRoute(
           message: 'invite has already been consumed'
         });
       }
+      if (
+        err instanceof KidTakenError ||
+        (named !== null && (err as { code?: unknown } | null)?.code === 'unique_violation')
+      ) {
+        return kidTaken();
+      }
       throw err;
     }
 
@@ -251,5 +273,13 @@ class RegisterRaceError extends Error {
   override readonly name = 'RegisterRaceError';
   constructor() {
     super('invite already consumed (race)');
+  }
+}
+
+/** Aborts the register tx when a named invite's kid became live; surfaces as a 409. */
+class KidTakenError extends Error {
+  override readonly name = 'KidTakenError';
+  constructor() {
+    super('kid already live');
   }
 }

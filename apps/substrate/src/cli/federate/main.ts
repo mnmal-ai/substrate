@@ -6,7 +6,7 @@
  * directly); `join` and `check` run on the CALLER and never touch a database.
  */
 
-import type { Capability } from '@mnmal-ai/substrate-compose';
+import { type Capability, kidProblem } from '@mnmal-ai/substrate-compose';
 import { AdminCliError } from '../../admin/errors.js';
 import { formatCheckOutput, runCheck } from './check.js';
 import { parseDuration } from './duration.js';
@@ -27,9 +27,10 @@ export const FEDERATE_USAGE = [
   'Usage: substrate federate <verb> [args...]',
   '',
   'Verbs:',
-  '  enroll --origin <url> --ns <csv> [--caps <csv>] [--ttl 15m] [--allow-admin]',
+  '  enroll --origin <url> --ns <csv> [--caps <csv>] [--ttl 15m] [--kid <name@host>] [--allow-admin]',
   '      ON THE CALLEE. Mints a single-use enrollment token. Needs SUBSTRATE_DATABASE_URL.',
   '      --caps admin requires --allow-admin — the credential leaves this machine.',
+  '      --kid names the key the redeemer gets; without it the callee picks a random one.',
   '',
   '  join [--name <n>] [--key-out <path>]',
   '      ON THE CALLER. Redeems the token in SUBSTRATE_JOIN_TOKEN and prints the config to paste.',
@@ -63,6 +64,7 @@ export function parseEnrollArgs(argv: ReadonlyArray<string>): EnrollArgs {
   let nsCsv: string | undefined;
   let capsCsv: string | undefined;
   let ttlRaw: string | undefined;
+  let kid: string | undefined;
   let allowAdmin = false;
 
   for (let i = 0; i < rest.length; i++) {
@@ -86,6 +88,10 @@ export function parseEnrollArgs(argv: ReadonlyArray<string>): EnrollArgs {
       if (ttlRaw !== undefined)
         throw new AdminCliError('enroll: --ttl specified more than once', 1);
       ttlRaw = takeValue(rest, i, 'enroll', '--ttl');
+      i += 1;
+    } else if (tok === '--kid') {
+      if (kid !== undefined) throw new AdminCliError('enroll: --kid specified more than once', 1);
+      kid = takeValue(rest, i, 'enroll', '--kid');
       i += 1;
     } else if (tok === '--allow-admin') {
       if (allowAdmin) throw new AdminCliError('enroll: --allow-admin specified more than once', 1);
@@ -166,7 +172,18 @@ export function parseEnrollArgs(argv: ReadonlyArray<string>): EnrollArgs {
     throw new AdminCliError(`enroll: ${err instanceof Error ? err.message : String(err)}`, 1);
   }
 
-  return { origin: normalisedOrigin, namespaces, capabilities, ttlMs };
+  if (kid !== undefined) {
+    const problem = kidProblem(kid);
+    if (problem !== null) throw new AdminCliError(`enroll: --kid: ${problem.message}`, 1);
+  }
+
+  return {
+    origin: normalisedOrigin,
+    namespaces,
+    capabilities,
+    ttlMs,
+    ...(kid !== undefined ? { kid } : {})
+  };
 }
 
 /**

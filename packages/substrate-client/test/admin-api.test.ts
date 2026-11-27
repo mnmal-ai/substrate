@@ -1,6 +1,6 @@
 import { HttpResponse, http } from 'msw';
 import { describe, expect, it } from 'vitest';
-import { AuthError, NetworkError, SubstrateClient } from '../src/index.js';
+import { AuthError, decodeJoinToken, NetworkError, SubstrateClient } from '../src/index.js';
 import { mockHandlers } from './_setup.js';
 
 const E = 'http://substrate.test';
@@ -326,6 +326,53 @@ describe('client.admin.register / invite', () => {
       ttlMs: 3_600_000
     });
     expect(out.code).toBe('inv_secret');
+  });
+
+  it('invite sends a kid when given one, and returns the kid the server echoes', async () => {
+    let body: unknown;
+    mockHandlers(
+      http.post(`${E}/substrate/v1/_system/invites`, async ({ request }) => {
+        body = await request.json();
+        return HttpResponse.json(
+          {
+            code: 'inv_secret',
+            expiresAt: '2026-10-07T00:00:00.000Z',
+            namespaces: ['cortext'],
+            capabilities: ['read'],
+            kid: 'repo-claude@host-a'
+          },
+          { status: 201 }
+        );
+      })
+    );
+    const out = await new SubstrateClient({ endpoint: E, token: 't' }).admin.invite({
+      namespaces: ['cortext'],
+      capabilities: ['read'],
+      kid: 'repo-claude@host-a'
+    });
+    expect(body).toEqual({
+      namespaces: ['cortext'],
+      capabilities: ['read'],
+      kid: 'repo-claude@host-a'
+    });
+    expect(out.kid).toBe('repo-claude@host-a');
+  });
+
+  it("invite returns a join token for the client's own origin", async () => {
+    mockHandlers(
+      http.post(`${E}/substrate/v1/_system/invites`, () =>
+        HttpResponse.json(
+          { code: 'inv_secret', expiresAt: 'x', namespaces: ['cortext'], capabilities: ['read'] },
+          { status: 201 }
+        )
+      )
+    );
+    const out = await new SubstrateClient({ endpoint: `${E}/`, token: 't' }).admin.invite({
+      namespaces: ['cortext'],
+      capabilities: ['read']
+    });
+    expect(out.token.startsWith('substrate-join-v1.')).toBe(true);
+    expect(decodeJoinToken(out.token)).toEqual({ origin: new URL(E).origin, code: 'inv_secret' });
   });
 });
 
