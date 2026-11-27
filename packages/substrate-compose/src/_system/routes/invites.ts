@@ -11,7 +11,7 @@ import type { Engine } from '@mnmal-ai/substrate-core';
 import { encodeList } from '@mnmal-ai/substrate-policy';
 import type { HttpHandler } from '@mnmal-ai/substrate-types';
 import { buildContext, jsonResponse, refusalStatus } from '../../routes/helpers.js';
-import { SYSTEM_NAMESPACE } from '../types.js';
+import { inviteRowId, SYSTEM_NAMESPACE } from '../types.js';
 import {
   asStringArray,
   badRequest,
@@ -83,7 +83,7 @@ export function invitesRoute(engine: Engine, opts: KeysRouteOptions): HttpHandle
     // Encode namespaces / capabilities via the shared comma-separated helper —
     // the autoCRUD surface stores them as scalar strings (see types.ts).
     const params: Record<string, unknown> = {
-      id: code,
+      id: inviteRowId(code),
       namespaces: encodeList(namespaces),
       capabilities: encodeList(capabilities),
       expiresAt: expiresAt.toISOString()

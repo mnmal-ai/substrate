@@ -18,6 +18,7 @@ import {
   buildAuditRow,
   encodeList,
   INVITE_TYPE,
+  inviteRowId,
   KEY_TYPE
 } from '@mnmal-ai/substrate-compose';
 import { type OpenDatasetFn, openPgDataset, type StoreEnv } from '../../admin/dataset.js';
@@ -102,7 +103,7 @@ export async function runEnroll(
         INVITE_TYPE,
         [
           {
-            id: code,
+            id: inviteRowId(code),
             namespaces: encodeList(args.namespaces),
             capabilities: encodeList(args.capabilities),
             expiresAt: expiresAt.toISOString(),
@@ -119,7 +120,7 @@ export async function runEnroll(
           buildAuditRow({
             actorKid: CLI_ACTOR_KID,
             kind: 'invite_created',
-            targetKid: code,
+            targetKid: inviteRowId(code),
             details: {
               origin: args.origin,
               namespaces: args.namespaces.join(','),

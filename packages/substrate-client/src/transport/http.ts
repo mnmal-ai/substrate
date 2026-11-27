@@ -175,8 +175,15 @@ async function errorInfo(res: Response): Promise<NetworkErrorInfo> {
           ? (b.error as Record<string, unknown>)
           : undefined;
       // First STRING wins: a non-string `error` (an object without a message) must not block `message`.
-      const message = [nested?.message, b.error, b.message].find((v) => typeof v === 'string');
-      const code = [nested?.code, b.code].find((v) => typeof v === 'string');
+      // A fault the server itself raised arrives as an envelope: { errors: [{ code, message }] }.
+      const first =
+        Array.isArray(b.errors) && b.errors[0] !== null && typeof b.errors[0] === 'object'
+          ? (b.errors[0] as Record<string, unknown>)
+          : undefined;
+      const message = [nested?.message, b.error, b.message, first?.message].find(
+        (v) => typeof v === 'string'
+      );
+      const code = [nested?.code, b.code, first?.code].find((v) => typeof v === 'string');
       if (typeof message === 'string') info.serverMessage = message;
       if (typeof code === 'string') info.code = code;
     }

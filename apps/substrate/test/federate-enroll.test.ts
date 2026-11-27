@@ -1,4 +1,4 @@
-import { AUDIT_EVENT_TYPE, INVITE_TYPE, KEY_TYPE } from '@mnmal-ai/substrate-compose';
+import { AUDIT_EVENT_TYPE, INVITE_TYPE, inviteRowId, KEY_TYPE } from '@mnmal-ai/substrate-compose';
 import { MemoryDataset } from '@mnmal-ai/substrate-dataset-memory';
 import { describe, expect, it } from 'vitest';
 import type { OpenDatasetFn, OpenedDataset } from '../src/admin/dataset.js';
@@ -170,11 +170,10 @@ describe('runEnroll', () => {
     expect(audits.rows[0]?.kind).toBe('invite_created');
     expect(audits.rows[0]?.actorKid).toBe('substrate-federate-cli');
 
-    // The token's code IS the invite row's id.
-    expect(decodeJoinToken(result.token)).toEqual({
-      origin: 'https://b.internal:3100',
-      code: invite?.id
-    });
+    // The invite row's id is derived from the token's code.
+    const decoded = decodeJoinToken(result.token);
+    expect(decoded.origin).toBe('https://b.internal:3100');
+    expect(invite?.id).toBe(inviteRowId(decoded.code));
     expect(result.probeWarning).toBeNull();
   });
 

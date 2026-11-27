@@ -27,6 +27,25 @@ describe('transport error mapping', () => {
     });
   });
 
+  it("a server fault's envelope reaches NetworkError as its first error's code and message", async () => {
+    mockHandlers(
+      http.get(`${E}/substrate/v1/_system/keys`, () =>
+        HttpResponse.json(
+          { data: {}, errors: [{ code: 'internal_error', message: 'see the server log' }] },
+          { status: 500 }
+        )
+      )
+    );
+    const err = await client()
+      .admin.keys()
+      .catch((e: unknown) => e);
+    expect(err).toMatchObject({
+      status: 500,
+      code: 'internal_error',
+      serverMessage: 'see the server log'
+    });
+  });
+
   it('`error` still wins over `message` when a body carries both', async () => {
     mockHandlers(
       http.get(`${E}/substrate/v1/_system/keys`, () =>

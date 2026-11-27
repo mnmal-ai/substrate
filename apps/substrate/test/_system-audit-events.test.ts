@@ -23,6 +23,7 @@ import {
   createRateLimiter,
   encodeList,
   INVITE_TYPE,
+  inviteRowId,
   KEY_TYPE,
   type RateLimiter,
   SYSTEM_NAMESPACE,
@@ -520,7 +521,7 @@ describe('AuditEvent § /register emits invite_consumed with clientIp', () => {
     const ev = events[0];
     // The actor IS the new kid — it performs its own registration.
     expect(ev?.actorKid).toBe(kid);
-    expect(ev?.targetKid).toBe(code);
+    expect(ev?.targetKid).toBe(inviteRowId(code));
     expect(ev?.clientIp).toBe('1.2.3.4');
     const details = ev?.details as Record<string, unknown>;
     expect(details.consumedBy).toBe(kid);
