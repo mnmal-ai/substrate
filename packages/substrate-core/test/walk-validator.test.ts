@@ -1659,6 +1659,8 @@ describe('percentile aggregate', () => {
     ['p a string', { value: 'price', p: '0.5' }],
     ['p missing', { value: 'price' }],
     ['a date field', { value: 'observedAt', p: 0.5 }],
+    ['a boolean field', { value: 'flag', p: 0.5 }],
+    ['p infinite', { value: 'price', p: Number.POSITIVE_INFINITY }],
     ['an extra key', { value: 'price', p: 0.5, q: 1 }],
     ['nearest not a boolean', { value: 'price', p: 0.5, nearest: 'yes' }],
     ['not an object', 'price']

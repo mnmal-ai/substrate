@@ -164,6 +164,8 @@ describe('walk _agg percentile compiles to an ordered-set aggregate', () => {
       /percentile_cont\('0\.5'::float8\) WITHIN GROUP \(ORDER BY \(.+\)::float8\)/
     );
     expect(text).not.toMatch(/\bOVER\b|LIMIT 1/);
+    // A result past float8's range is NULL, as memory's.
+    expect(text).toMatch(/NULLIF\(NULLIF\(percentile_cont/);
   });
 
   it('nearest: percentile_disc over the field', () => {

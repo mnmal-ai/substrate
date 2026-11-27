@@ -135,7 +135,7 @@ export function buildGroupedRead(
       case 'percentile':
         raw = nearest
           ? sql`percentile_disc(${p}::float8) WITHIN GROUP (ORDER BY ${f})`
-          : sql`percentile_cont(${p}::float8) WITHIN GROUP (ORDER BY (${f})::float8)`;
+          : sql`NULLIF(NULLIF(percentile_cont(${p}::float8) WITHIN GROUP (ORDER BY (${f})::float8), 'Infinity'::float8), '-Infinity'::float8)`;
         break;
       default:
         raw = sql`${u(op)}(${t === 'string' ? sql`(${f}) COLLATE "C"` : f})`;

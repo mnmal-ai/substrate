@@ -29,6 +29,11 @@ describe('percentileOf', () => {
     expect(percentileOf([1n, 2n], 0.5, false)).toBe(1.5);
   });
 
+  it('is null when interpolating overflows float64, as avg and sum are', () => {
+    expect(percentileOf([-1.7e308, 1.7e308], 0.5, false)).toBeNull();
+    expect(percentileOf([-1.7e308, 1.7e308], 0.5, true)).toBe(-1.7e308);
+  });
+
   it('leaves its input in order', () => {
     const values = [3, 1, 2];
     percentileOf(values, 0.5, false);

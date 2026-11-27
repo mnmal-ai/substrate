@@ -58,6 +58,8 @@ function rows(): Array<Record<string, unknown>> {
   for (let i = 0; i < 3; i++) out.push({ region: 99, phrase: 'x' });
   // Three identical int64 values past 2^53: their avg must round the same on both.
   for (let i = 0; i < 3; i++) out.push({ region: 97, user: '15011998757901659' });
+  // Two numbers whose interpolated midpoint overflows float64 on the way.
+  for (const w of [-1.7e308, 1.7e308]) out.push({ region: 96, w });
   // Two int64 values at the top of the range, in a group of their own.
   for (let i = 0; i < 2; i++) out.push({ region: 98, user: MAX });
   return out;
@@ -186,12 +188,16 @@ describe('grouped reads on memory and pg', () => {
       const by = new Map((out.groups ?? []).map((g) => [g.region, g]));
       expect(by.get(99)).toEqual({ region: 99, m: null, n: null, u: null, ui: null });
       expect(String(by.get(98)?.u)).toBe(MAX);
+      // Interpolating between ±1.7e308 overflows: null, not Infinity; the ends are exact.
+      expect(by.get(96)?.m).toBe(p === 0 ? -1.7e308 : p === 1 ? 1.7e308 : null);
     }
   });
 
   it('percentile: over the whole result, an expression argument, and no rows', async () => {
     const out = await same(
       {
+        // Region 96's values overflow when doubled.
+        where: { region: { neq: 96 } },
         aggregate: {
           m: { percentile: { value: 'w', p: 0.5 } },
           d: { percentile: { value: { mul: ['w', 2] }, p: 0.25 } },
@@ -225,7 +231,7 @@ describe('grouped reads on memory and pg', () => {
 
   it('query 7: a filtered count', async () => {
     const out = await same({ where: { region: { neq: 0 } }, aggregate: cnt });
-    expect(out.groups).toEqual([{ c: 179 }]);
+    expect(out.groups).toEqual([{ c: 181 }]);
   });
 
   it('query 8: group by a field, ordered by an aggregate', async () => {

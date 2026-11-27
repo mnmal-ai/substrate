@@ -136,10 +136,10 @@ function aggOver(
       int === undefined
         ? refValue(sql, table, value, 'number', alias)
         : fieldExpr(sql, table, value, 'int64', alias);
-    // Interpolated in float8, as memory; a nearest value keeps its field's kind.
+    // Interpolated in float8, NULL past its range, as memory; a nearest value keeps its field's kind.
     if (nearest !== true) {
       return {
-        agg: sql`to_jsonb(percentile_cont(${frac}) WITHIN GROUP (ORDER BY (${v})::float8))`,
+        agg: sql`to_jsonb(NULLIF(NULLIF(percentile_cont(${frac}) WITHIN GROUP (ORDER BY (${v})::float8), 'Infinity'::float8), '-Infinity'::float8))`,
         kind: 'number'
       };
     }

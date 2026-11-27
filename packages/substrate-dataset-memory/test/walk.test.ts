@@ -1173,11 +1173,11 @@ describe('percentile aggregate in memory', () => {
     const grouped = await ds.read('Observation', {
       aggregate: { mid: { percentile: { value: 'price', p: 0.5 } } },
       groupBy: { s: 'status' },
-      orderBy: [{ mid: 'desc' }]
+      orderBy: [{ mid: 'asc' }]
     } as ReadParams);
     expect(grouped.groups).toEqual([
-      { s: 'a', mid: 200 },
-      { s: 'b', mid: 15 }
+      { s: 'b', mid: 15 },
+      { s: 'a', mid: 200 }
     ]);
     const kept = await ds.read('Observation', {
       aggregate: { mid: { percentile: { value: 'price', p: 0.5 } } },
