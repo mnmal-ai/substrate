@@ -19,6 +19,10 @@
       "default": "substrate.index",
       "type": "string",
       "minLength": 1
+    },
+    "dropCapability": {
+      "type": "string",
+      "minLength": 1
     }
   },
   "additionalProperties": false

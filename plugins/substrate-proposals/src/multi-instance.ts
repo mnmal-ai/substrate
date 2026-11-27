@@ -89,7 +89,17 @@ export function skipLine(namespace: string, row: Row, err: unknown): string {
   const field = (err instanceof ProposalError ? err.details.fieldName : undefined) ?? row.fieldName;
   const where = `${namespace}${type === undefined ? '' : `/${String(type)}`}`;
   const what = field === undefined ? '' : ` field '${String(field)}'`;
-  return `substrate-proposals: ${where}${what}: skipped at replay: ${err instanceof Error ? err.message : String(err)}`;
+  return oneLine(
+    `substrate-proposals: ${where}${what}: skipped at replay: ${err instanceof Error ? err.message : String(err)}`
+  );
+}
+
+/** `line` with each control character and line separator escaped, so a stored name cannot start a new log line. */
+function oneLine(line: string): string {
+  return line.replace(
+    /[\p{Cc}\u2028\u2029]/gu,
+    (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`
+  );
 }
 
 /**
@@ -98,7 +108,9 @@ export function skipLine(namespace: string, row: Row, err: unknown): string {
  */
 export function reservedSkipLine(namespace: string, row: Row, err: unknown): string | undefined {
   if (err instanceof ProposalError && err.details.typeSkipped === true) {
-    return `substrate-proposals: ${namespace}/${String(row.targetType)}: field '${String(row.fieldName)}' is not added, because its type was skipped`;
+    return oneLine(
+      `substrate-proposals: ${namespace}/${String(row.targetType)}: field '${String(row.fieldName)}' is not added, because its type was skipped`
+    );
   }
   if (!(err instanceof ProposalError) || !err.message.includes('reserved for server metadata')) {
     return undefined;
@@ -107,7 +119,9 @@ export function reservedSkipLine(namespace: string, row: Row, err: unknown): str
   const field = String(err.details.fieldName ?? row.fieldName);
   const effect =
     row.typeName !== undefined ? 'the type is not registered' : 'the field is not added';
-  return `substrate-proposals: ${namespace}/${type}: field '${field}' is reserved for server metadata; ${effect}`;
+  return oneLine(
+    `substrate-proposals: ${namespace}/${type}: field '${field}' is reserved for server metadata; ${effect}`
+  );
 }
 
 export interface SetupListenerArgs {
@@ -309,7 +323,18 @@ export async function reconcileNamespace(args: ReconcileArgs): Promise<void> {
       args.onSkip?.(row, typeSkipped(row));
       continue;
     }
-    if (!entry || !fieldNeedsReplay(entry, row)) continue;
+    if (!entry) {
+      args.onSkip?.(
+        row,
+        new ProposalError(
+          'unknown_type',
+          `type '${String(row.targetType)}' is not registered, so its field is not added`,
+          { typeName: row.targetType, fieldName: row.fieldName }
+        )
+      );
+      continue;
+    }
+    if (!fieldNeedsReplay(entry, row)) continue;
     try {
       const fieldSpec = storedSpec(row, 'fieldSpecJson') as FieldSpecJson;
       applyFieldProposal({
@@ -356,6 +381,8 @@ export interface InstallHotAddedNamespaceArgs {
   proposeCapability?: string;
   /** Capability that writes to a proposal row's indexes need; see `proposeToWrite`. */
   indexCapability?: string;
+  /** Capability that removing a proposal record needs; see `defineProposalTypes`. */
+  dropCapability?: string;
   dataset: Dataset;
   registryStore: RegistryStore;
   engine: EngineHandle;
@@ -422,7 +449,8 @@ export function installHotAddedNamespace(args: InstallHotAddedNamespaceArgs): vo
     args.ns,
     args.registryStore,
     args.proposeCapability,
-    args.indexCapability
+    args.indexCapability,
+    args.dropCapability
   ).install({
     registry,
     dataset: binding.dataset,
@@ -461,6 +489,8 @@ export interface SetupClusterListenerArgs {
   proposeCapability?: string;
   /** Capability that writes to a proposal row's indexes need; see `proposeToWrite`. */
   indexCapability?: string;
+  /** Capability that removing a proposal record needs; see `defineProposalTypes`. */
+  dropCapability?: string;
   pubsub: PubSub;
   registryStore: RegistryStore;
   engine: EngineHandle;
@@ -521,6 +551,7 @@ export async function setupClusterNamespaceListener(args: SetupClusterListenerAr
         edges: args.edges,
         ...(args.proposeCapability !== undefined && { proposeCapability: args.proposeCapability }),
         ...(args.indexCapability !== undefined && { indexCapability: args.indexCapability }),
+        ...(args.dropCapability !== undefined && { dropCapability: args.dropCapability }),
         ...(args.registerProposalMutations !== undefined && {
           registerProposalMutations: args.registerProposalMutations
         })
@@ -538,6 +569,8 @@ export interface ReconcileClusterArgs {
   proposeCapability?: string;
   /** Capability that writes to a proposal row's indexes need; see `proposeToWrite`. */
   indexCapability?: string;
+  /** Capability that removing a proposal record needs; see `defineProposalTypes`. */
+  dropCapability?: string;
   controlNamespace: string;
   registryStore: RegistryStore;
   engine: EngineHandle;
@@ -577,7 +610,17 @@ export async function reconcileClusterNamespaces(args: ReconcileClusterArgs): Pr
     const ns = row.ns as string;
     if (args.registryStore.has(ns)) continue;
     const dataset = args.datasetFor(ns);
-    if (dataset === undefined) continue;
+    if (dataset === undefined) {
+      args.onSkip?.(
+        row,
+        new ProposalError(
+          'dataset_not_provisioned',
+          `namespace '${ns}' has no dataset on this host, so it is not installed`,
+          { ns }
+        )
+      );
+      continue;
+    }
     try {
       installHotAddedNamespace({
         ns,
@@ -587,6 +630,7 @@ export async function reconcileClusterNamespaces(args: ReconcileClusterArgs): Pr
         edges: args.edges,
         ...(args.proposeCapability !== undefined && { proposeCapability: args.proposeCapability }),
         ...(args.indexCapability !== undefined && { indexCapability: args.indexCapability }),
+        ...(args.dropCapability !== undefined && { dropCapability: args.dropCapability }),
         ...(args.registerProposalMutations !== undefined && {
           registerProposalMutations: args.registerProposalMutations
         })
