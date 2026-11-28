@@ -368,9 +368,9 @@ export function shortIdJoinSql(table: TypeTable, id: string): string {
  * shortcut: the id order holds within the UPDATE arm and within the INSERT
  * arm, not across them, so three writers with client-supplied ids can still
  * deadlock (A locks stored z; C commits a new a; B locks a, waits on z; A's
- * insert conflicts on a). Postgres aborts one with 40P01, which reaches the
- * caller as an error: nothing in the engine retries it. Lock the conflicting
- * ids first if this shows up in practice.
+ * insert conflicts on a). Postgres aborts one with 40P01, which the caller
+ * sees as `write_conflict`: nothing in the engine retries it. Lock the
+ * conflicting ids first if this shows up in practice.
  */
 export function writeRowsStatement(
   sql: Sql | TransactionSql,

@@ -22,6 +22,8 @@ export const WALKS_UNSUPPORTED_STORE = 'walks_unsupported_store';
 export const QUERY_TIMEOUT = 'query_timeout';
 /** No store connection came free within the wait limit, so the request never started; retry later. */
 export const STORE_BUSY = 'store_busy';
+/** The store aborted the write's transaction to break a deadlock or a serialization conflict with a concurrent write; nothing was written, so retry. */
+export const WRITE_CONFLICT = 'write_conflict';
 /** An aggregate or expression whose value leaves its type's range (an int64 sum past 2^63-1); the same code on every engine. */
 export const VALUE_OUT_OF_RANGE = 'value_out_of_range';
 /** A regex call on the memory evaluator that would take more steps than its budget; `details: { budget }`. */

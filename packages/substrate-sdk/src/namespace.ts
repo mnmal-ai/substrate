@@ -142,8 +142,8 @@ export interface TypeInput {
    * types are unaffected and pay nothing.
    *
    * Two transactions that write two visible-order types in opposite orders
-   * can deadlock; Postgres aborts one with 40P01. Write them in a consistent
-   * order.
+   * can deadlock; Postgres aborts one, which is refused `write_conflict`. Write
+   * them in a consistent order.
    *
    * Making an existing type visible assigns no seq to its old rows: they keep
    * a null seq and sort after every new row.
