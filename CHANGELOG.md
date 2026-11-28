@@ -2,6 +2,26 @@
 
 Releases before 1.0.0-alpha.21 are recorded only in their GitHub release notes.
 
+## 1.0.0-beta.20 (2026-11-27)
+
+Changes since 1.0.0-beta.19. This release gives a write that Postgres aborts for a deadlock a retryable code, and fixes four faults in the proposals plugin and one in the memory dataset.
+
+### Added
+
+- **A `write_conflict` code for a write Postgres aborts (#363).** A mutate whose transaction Postgres aborts to break a deadlock (`40P01`) or a serialization conflict (`40001`) is refused `write_conflict`. Nothing was written, so the call can be sent again. A single frame carries the code at each key; an array under one key carries it beside `batched_frame_rolled_back`. Nothing retries it for the caller.
+- **A `dropCapability` setting for the proposals plugin (#361).** It names the capability that removing a proposal record needs, in the namespace it changes. Unset, it takes `SUBSTRATE_ADMIN_CAPABILITY`, then `admin`.
+
+### Changed
+
+- **A store refusal on a write answers 200 with its code (#363).** `write_conflict` and `store_busy` on a mutate arrive in the envelope's `errors`, where the call answered 500 `internal_error`. A caller that detected these by status code should read `errors[].code`.
+
+### Fixed
+
+- **Control characters in a replay skip warning are escaped (#361).** A stored proposal name holding a newline or another control character could forge extra lines in the boot log.
+- **A NamespaceProposal write with a non-string `ns` is refused `invalid_namespace` (#361).** It passed the liveness gate unchecked.
+- **Boot replay reports two skips it made silently (#361).** A cluster namespace whose dataset is not provisioned is reported as `dataset_not_provisioned`, and a field proposal whose target type is not registered as `unknown_type`.
+- **A row read from the memory dataset keeps its values (#362).** A tombstone, a conditional update, a single-field update or a short id bind changed the stored row in place, so a row an earlier read had returned changed with it. Each now replaces the stored row.
+
 ## 1.0.0-beta.19 (2026-11-27)
 
 Changes since 1.0.0-beta.18. This release fixes minting an invite on a store that enforces UUID row ids, and adds spacing to the TUI's `/keys` panels.
